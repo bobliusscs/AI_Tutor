@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment
+.env
+.env.local
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (for frontend)
+node_modules/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Qoder
+.qoder/
+
+# Uploads (user-generated files)
+backend/app/uploads/
+backend/uploads/
+
+# Database files
+mindguide.db

@@ -1,0 +1,608 @@
+/* Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+/* ================================================
+   Aurora Design System — CSS Custom Properties
+   ================================================ */
+:root {
+  --clr-primary: #6366f1;
+  --clr-primary-dark: #4f46e5;
+  --clr-primary-light: #a5b4fc;
+  --clr-secondary: #8b5cf6;
+  --clr-cyan: #06b6d4;
+  --clr-emerald: #10b981;
+  --clr-amber: #f59e0b;
+  --clr-pink: #ec4899;
+  --clr-rose: #f43f5e;
+
+  --grad-primary: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  --grad-cyan: linear-gradient(135deg, #06b6d4 0%, #10b981 100%);
+  --grad-warm: linear-gradient(135deg, #f59e0b 0%, #ec4899 100%);
+  --grad-aurora: linear-gradient(135deg, #6366f1 0%, #06b6d4 50%, #10b981 100%);
+  --grad-rose: linear-gradient(135deg, #f43f5e 0%, #ec4899 100%);
+
+  --surface-base: #f8faff;
+  --surface-card: rgba(255, 255, 255, 0.82);
+  --surface-solid: #ffffff;
+  --surface-glass: rgba(255, 255, 255, 0.65);
+  --surface-sidebar: rgba(255, 255, 255, 0.92);
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+
+  --border-glass: rgba(255, 255, 255, 0.7);
+  --border-light: rgba(226, 232, 240, 0.9);
+  --border-medium: #e2e8f0;
+
+  --shadow-xs: 0 1px 4px rgba(99, 102, 241, 0.04);
+  --shadow-sm: 0 2px 12px rgba(99, 102, 241, 0.06), 0 1px 4px rgba(0,0,0,0.03);
+  --shadow-md: 0 4px 24px rgba(99, 102, 241, 0.09), 0 1px 8px rgba(0,0,0,0.04);
+  --shadow-lg: 0 12px 40px rgba(99, 102, 241, 0.14), 0 4px 16px rgba(0,0,0,0.06);
+  --shadow-xl: 0 24px 64px rgba(99, 102, 241, 0.18), 0 8px 24px rgba(0,0,0,0.08);
+  --shadow-glow: 0 0 32px rgba(99, 102, 241, 0.28);
+  --shadow-glow-sm: 0 0 16px rgba(99, 102, 241, 0.2);
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  --transition-fast: all 0.15s ease;
+  --transition-base: all 0.25s ease;
+  --transition-slow: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* ================================================
+   Aurora Float Animations
+   ================================================ */
+@keyframes aurora-float-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.38; }
+  33%       { transform: translate(32px, -28px) scale(1.07); opacity: 0.5; }
+  66%       { transform: translate(-22px, 20px) scale(0.93); opacity: 0.28; }
+}
+@keyframes aurora-float-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.3; }
+  25%       { transform: translate(-35px, 25px) scale(1.1); opacity: 0.42; }
+  75%       { transform: translate(28px, -20px) scale(0.9); opacity: 0.22; }
+}
+@keyframes aurora-float-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.26; }
+  50%       { transform: translate(20px, 30px) scale(1.08); opacity: 0.4; }
+}
+@keyframes aurora-float-4 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.32; }
+  40%       { transform: translate(-25px, -18px) scale(1.05); opacity: 0.44; }
+  70%       { transform: translate(18px, 22px) scale(0.95); opacity: 0.24; }
+}
+@keyframes gradient-shift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+@keyframes thinking-dot {
+  0%, 20%    { opacity: 0.2; transform: scale(0.8); }
+  50%        { opacity: 1;   transform: scale(1.1); }
+  80%, 100%  { opacity: 0.2; transform: scale(0.8); }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes pulse-ring {
+  0%   { transform: scale(1);    opacity: 0.6; }
+  100% { transform: scale(1.6);  opacity: 0; }
+}
+
+/* ================================================
+   Base
+   ================================================ */
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', 'Noto Sans SC', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--surface-base);
+  color: var(--text-primary);
+}
+code {
+  font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, Consolas,
+    'Courier New', monospace;
+}
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* ================================================
+   Custom Scrollbar
+   ================================================ */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: #f1f5f9; border-radius: 10px; }
+::-webkit-scrollbar-thumb  {
+  background: linear-gradient(180deg, #a5b4fc 0%, #c4b5fd 100%);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #6366f1 0%, #8b5cf6 100%);
+}
+
+/* ================================================
+   Utility — Aurora Orbs
+   ================================================ */
+.aurora-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(72px);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+.aurora-orb-1 { animation: aurora-float-1 14s ease-in-out infinite; }
+.aurora-orb-2 { animation: aurora-float-2 17s ease-in-out infinite; }
+.aurora-orb-3 { animation: aurora-float-3 11s ease-in-out infinite; }
+.aurora-orb-4 { animation: aurora-float-4 20s ease-in-out infinite; }
+
+/* ================================================
+   Utility — Gradient Text
+   ================================================ */
+.gradient-text {
+  background: var(--grad-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.gradient-text-aurora {
+  background: var(--grad-aurora);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: gradient-shift 5s ease infinite;
+}
+
+/* ================================================
+   Utility — Glass Card
+   ================================================ */
+.glass-card {
+  background: var(--surface-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-glass);
+  box-shadow: var(--shadow-md);
+  border-radius: var(--radius-lg);
+}
+
+/* ================================================
+   Utility — Gradient Button
+   ================================================ */
+.btn-gradient {
+  background: var(--grad-primary);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 10px 24px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.38);
+  transition: var(--transition-base);
+}
+.btn-gradient:hover {
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  box-shadow: 0 6px 22px rgba(99, 102, 241, 0.52);
+  transform: translateY(-2px);
+}
+
+/* ================================================
+   Chat — Bubbles
+   ================================================ */
+.chat-bubble-user {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #fff;
+  border-radius: 20px 20px 6px 20px;
+  padding: 14px 18px;
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.35), 0 0 40px rgba(99, 102, 241, 0.15);
+  font-size: 14.5px;
+  line-height: 1.7;
+  word-break: break-word;
+  white-space: pre-wrap;
+  position: relative;
+  overflow: hidden;
+}
+.chat-bubble-user::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.15) 0%, transparent 50%);
+  pointer-events: none;
+}
+.chat-bubble-ai {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+  font-size: 14.5px;
+  line-height: 1.7;
+  word-break: break-word;
+  white-space: pre-wrap;
+  position: relative;
+  overflow: visible;
+}
+.chat-bubble-ai::before {
+  content: none;
+}
+
+/* Thinking dots */
+.thinking-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f59e0b, #fbbf24);
+  margin: 0 3px;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.4);
+}
+.thinking-dot:nth-child(1) { animation: thinking-dot 1.4s ease infinite 0s; }
+.thinking-dot:nth-child(2) { animation: thinking-dot 1.4s ease infinite 0.2s; }
+.thinking-dot:nth-child(3) { animation: thinking-dot 1.4s ease infinite 0.4s; }
+
+/* Quick pill */
+.quick-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 8px 16px;
+  border-radius: var(--radius-full);
+  background: rgba(255,255,255,0.9);
+  border: 1.5px solid rgba(226,232,240,0.8);
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  transition: var(--transition-fast);
+  user-select: none;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.06);
+}
+.quick-pill:hover {
+  background: linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(139,92,246,0.05) 100%);
+  border-color: var(--clr-primary-light);
+  color: var(--clr-primary);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.12);
+}
+
+/* ================================================
+   Sidebar Menu Items
+   ================================================ */
+.sidebar-nav-item {
+  transition: var(--transition-fast);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.sidebar-nav-item:hover {
+  background: rgba(99, 102, 241, 0.06);
+  transform: translateX(2px);
+}
+.sidebar-nav-item.active {
+  background: linear-gradient(90deg, rgba(99,102,241,0.12) 0%, rgba(139,92,246,0.05) 100%);
+  color: var(--clr-primary);
+}
+
+/* ================================================
+   Ant Design Global Theme Overrides
+   ================================================ */
+.ant-card {
+  border-radius: var(--radius-lg) !important;
+  border-color: var(--border-light) !important;
+  box-shadow: var(--shadow-md) !important;
+  transition: box-shadow 0.25s ease, transform 0.25s ease !important;
+  overflow: hidden;
+}
+.ant-card:hover {
+  box-shadow: var(--shadow-lg) !important;
+  transform: translateY(-2px);
+}
+.ant-card-head {
+  border-bottom-color: var(--border-light) !important;
+  background: transparent !important;
+  font-weight: 600 !important;
+}
+.ant-btn-primary {
+  background: var(--grad-primary) !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(99,102,241,0.38) !important;
+  font-weight: 500 !important;
+  transition: var(--transition-base) !important;
+}
+.ant-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+  box-shadow: 0 6px 20px rgba(99,102,241,0.52) !important;
+  transform: translateY(-1px);
+}
+.ant-btn-primary:active { transform: translateY(0) !important; }
+.ant-btn-default {
+  border-color: var(--border-medium) !important;
+  transition: var(--transition-base) !important;
+}
+.ant-btn-default:hover:not(:disabled) {
+  border-color: var(--clr-primary) !important;
+  color: var(--clr-primary) !important;
+}
+.ant-input, .ant-input-affix-wrapper {
+  border-radius: var(--radius-sm) !important;
+  border-color: var(--border-medium) !important;
+  transition: var(--transition-base) !important;
+}
+.ant-input:focus, .ant-input-affix-wrapper:focus,
+.ant-input-affix-wrapper-focused {
+  border-color: var(--clr-primary) !important;
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.15) !important;
+}
+.ant-menu-item-selected {
+  background: linear-gradient(90deg, rgba(99,102,241,0.11) 0%, rgba(139,92,246,0.04) 100%) !important;
+  color: var(--clr-primary) !important;
+  border-right: 3px solid var(--clr-primary) !important;
+}
+.ant-menu-item:hover:not(.ant-menu-item-disabled) {
+  background: rgba(99,102,241,0.06) !important;
+  color: var(--clr-primary) !important;
+}
+.ant-menu-item-selected .anticon { color: var(--clr-primary) !important; }
+.ant-tag { border-radius: var(--radius-full) !important; font-size: 12px !important; }
+.ant-progress-bg { background: var(--grad-primary) !important; }
+.ant-select-selector {
+  border-radius: var(--radius-sm) !important;
+  border-color: var(--border-medium) !important;
+}
+.ant-select-focused .ant-select-selector {
+  border-color: var(--clr-primary) !important;
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.15) !important;
+}
+.ant-switch-checked { background: var(--grad-primary) !important; }
+.ant-modal-content {
+  border-radius: var(--radius-xl) !important;
+  box-shadow: var(--shadow-xl) !important;
+}
+.ant-drawer-content {
+  background: var(--surface-card) !important;
+  backdrop-filter: blur(20px) !important;
+}
+.ant-layout { background: var(--surface-base) !important; }
+.ant-layout-sider {
+  background: var(--surface-sidebar) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+}
+.ant-divider { border-color: var(--border-light) !important; }
+.ant-message-notice-content {
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+.ant-spin-dot-item { background-color: var(--clr-primary) !important; }
+.ant-tooltip-inner {
+  border-radius: var(--radius-sm) !important;
+  background: rgba(15,23,42,0.92) !important;
+  backdrop-filter: blur(8px) !important;
+}
+.ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--clr-primary) !important;
+}
+.ant-tabs-ink-bar {
+  background: var(--grad-primary) !important;
+  height: 3px !important;
+  border-radius: 3px !important;
+}
+.ant-radio-button-wrapper-checked:not([class*='ant-radio-button-wrapper-disabled']) {
+  background: var(--grad-primary) !important;
+  border-color: var(--clr-primary) !important;
+  color: white !important;
+}
+.ant-popover-inner {
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+.ant-upload-drag {
+  border-radius: var(--radius-md) !important;
+  border-color: var(--border-medium) !important;
+  transition: var(--transition-base) !important;
+}
+.ant-upload-drag:hover {
+  border-color: var(--clr-primary) !important;
+  background: rgba(99,102,241,0.03) !important;
+}
+.ant-form-item-label > label {
+  font-weight: 500 !important;
+  color: var(--text-secondary) !important;
+}
+.ant-badge-count {
+  background: var(--grad-primary) !important;
+  box-shadow: none !important;
+}
+.ant-statistic-content-value { color: var(--text-primary) !important; }
+
+/* ================================================
+   Chat — Voice Recording Pulse Animation
+   ================================================ */
+.voice-recording-pulse {
+  animation: voice-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+  }
+}
+
+/* ================================================
+   Chat — Thinking Dots Animation
+   ================================================ */
+.thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.thinking-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+  animation: thinking-bounce 1.4s ease-in-out infinite;
+}
+
+.thinking-dots span:nth-child(1) { animation-delay: 0s; }
+.thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes thinking-bounce {
+  0%, 80%, 100% {
+    transform: scale(0.8);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}
+
+/* ================================================
+   Chat — Drag Upload Overlay
+   ================================================ */
+.drag-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(99, 102, 241, 0.05);
+  border: 2px dashed #6366f1;
+  border-radius: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* ================================================
+   Chat — Messages Area Scrollbar
+   ================================================ */
+.chat-messages-area::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-messages-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages-area::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 3px;
+}
+
+.chat-messages-area::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+/* ================================================
+   Chat — Canvas Panel Scrollbar
+   ================================================ */
+.canvas-panel-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.canvas-panel-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.canvas-panel-content::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 3px;
+}
+
+/* ================================================
+   Chat — Markdown Content Styles
+   ================================================ */
+.chat-markdown-content {
+  line-height: 1.7;
+  color: #1e293b;
+}
+
+.chat-markdown-content p {
+  margin: 0.5em 0;
+}
+
+.chat-markdown-content ul,
+.chat-markdown-content ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.chat-markdown-content li {
+  margin: 0.25em 0;
+}
+
+.chat-markdown-content blockquote {
+  border-left: 3px solid #e2e8f0;
+  padding-left: 12px;
+  margin: 0.75em 0;
+  color: #64748b;
+}
+
+.chat-markdown-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.75em 0;
+  font-size: 14px;
+}
+
+.chat-markdown-content th,
+.chat-markdown-content td {
+  border: 1px solid #e2e8f0;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.chat-markdown-content th {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.chat-markdown-content a {
+  color: #6366f1;
+  text-decoration: none;
+}
+
+.chat-markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.chat-markdown-content hr {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 1em 0;
+}
+
+/* PPT幻灯片内容区滚动条 */
+.ppt-slide-content::-webkit-scrollbar {
+  width: 4px;
+}
+.ppt-slide-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ppt-slide-content::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.25);
+  border-radius: 2px;
+}
+.ppt-slide-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.4);
+}
