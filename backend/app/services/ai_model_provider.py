@@ -4212,22 +4212,22 @@ JSON结构：
 {chr(10).join([f'第{idx+1}页：{prompt}' for idx, prompt in enumerate(slides_prompts)])}
 
 请按以下格式返回JSON数组（不要包含```标记）：
-[{"index":0,"type":"类型","title":"标题","content":CONTENT_JSON,"notes":"讲解稿"},...]
+[{{"index":0,"type":"类型","title":"标题","content":CONTENT_JSON,"notes":"讲解稿"}},...]
 
 【各类型content格式】：
 
 ★ exercise类型（练习）- 必须包含questions数组：
-content应该是: {"questions":[{"type":"choice","question":"题干","options":["A.","B.","C.","D."],"answer":"答案","analysis":"解析"}]}
+content应该是: {{"questions":[{{"type":"choice","question":"题干","options":["A.","B.","C.","D."],"answer":"答案","analysis":"解析"}}]}}
 
 ★ 其他类型：
-cover: {"title":"标题","subtitle":"副标题"}
-intro: {"scene":"场景","question":"问题"}
-concept: {"definition":"定义","key_attributes":[{"label":"属性","value":"值"}]}
-content: {"main_idea":"核心","points":[{"title":"要点","detail":"说明"}]}
-comparison: {"items":[{"name":"名称","features":["特点"],"example":"示例"}],"key_difference":"区别"}
-example: {"case_title":"案例","background":"背景","steps":[{"label":"步骤","content":"内容"}]}
-summary: {"key_takeaways":[{"point":"要点","keyword":"关键词"}]}
-ending: {"message":"寄语","next_topic":"预告"}
+cover: {{"title":"标题","subtitle":"副标题"}}
+intro: {{"scene":"场景","question":"问题"}}
+concept: {{"definition":"定义","key_attributes":[{{"label":"属性","value":"值"}}]}}
+content: {{"main_idea":"核心","points":[{{"title":"要点","detail":"说明"}}]}}
+comparison: {{"items":[{{"name":"名称","features":["特点"],"example":"示例"}}],"key_difference":"区别"}}
+example: {{"case_title":"案例","background":"背景","steps":[{{"label":"步骤","content":"内容"}}]}}
+summary: {{"key_takeaways":[{{"point":"要点","keyword":"关键词"}}]}}
+ending: {{"message":"寄语","next_topic":"预告"}}
 
 【要求】：
 1. content必须是JSON对象，不是字符串
