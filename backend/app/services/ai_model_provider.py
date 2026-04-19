@@ -4225,8 +4225,16 @@ JSON结构：
         if prev_summary:
             batch_prompt += f"\n\n【前面页面参考】\n{prev_summary}"
 
+        system_prompt = (
+            "你是一位专业的教学课件设计师。请根据页面规划，生成每页的完整结构化内容。\n\n重要规则：\n"
+            "1. content字段必须是JSON对象而非纯文本字符串\n"
+            "2. 严格按照各幻灯片类型对应的格式输出\n"
+            "3. exercise类型的content必须包含questions数组，每道题包含type、question、answer、analysis字段\n"
+            "4. 当key_points是抽象活动（如'格局描述、功能判断'）时，将每个抽象活动转换为对应类型的练习题\n"
+            "5. 所有文字必须简洁，避免冗长描述"
+        )
         messages = [
-            {"role": "system", "content": "你是一位专业的教学课件设计师。请根据页面规划，生成每页的完整结构化内容。content字段必须是JSON对象而非纯文本字符串，严格按照各幻灯片类型对应的格式输出。"},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": batch_prompt}
         ]
 
@@ -4304,16 +4312,58 @@ JSON结构：
         
         # 返回默认内容
         print(f"[generate_batch_slides_content] 批次失败，返回默认内容")
-        return [
-            {
-                "index": slide_plan.get("index", 0),
-                "type": slide_plan.get("type", "content"),
-                "title": slide_plan.get("title", ""),
-                "content": f"【{slide_plan.get('title', '')}】\n\n" + "、".join(slide_plan.get("key_points", [])),
-                "notes": ""
-            }
-            for slide_plan in slides_plan
-        ]
+        default_slides = []
+        for slide_plan in slides_plan:
+            slide_type = slide_plan.get("type", "content")
+            slide_title = slide_plan.get("title", "")
+            key_points = slide_plan.get("key_points", [])
+            
+            # 为exercise类型生成结构化的默认questions
+            if slide_type == "exercise":
+                default_questions = []
+                for idx, kp in enumerate(key_points[:3]):
+                    # 根据key_points的类型生成不同的问题
+                    if "判断" in kp or "选择" in kp:
+                        default_questions.append({
+                            "type": "choice",
+                            "question": f"关于{slide_title}的练习题{idx + 1}",
+                            "options": ["A. 选项1", "B. 选项2", "C. 选项3", "D. 选项4"],
+                            "answer": "A",
+                            "analysis": "请参考相关知识点"
+                        })
+                    elif "填空" in kp:
+                        default_questions.append({
+                            "type": "blank",
+                            "question": f"请填写：{kp}",
+                            "answer": "答案",
+                            "analysis": "请参考相关知识点"
+                        })
+                    else:
+                        default_questions.append({
+                            "type": "choice",
+                            "question": f"{kp}（练习题{idx + 1}）",
+                            "options": ["A. 正确", "B. 错误", "C. 不确定", "D. 以上都不对"],
+                            "answer": "A",
+                            "analysis": "请参考相关知识点"
+                        })
+                
+                default_slides.append({
+                    "index": slide_plan.get("index", 0),
+                    "type": slide_type,
+                    "title": slide_title,
+                    "content": {"questions": default_questions} if default_questions else {"questions": []},
+                    "notes": ""
+                })
+            else:
+                # 其他类型保持原有格式
+                default_slides.append({
+                    "index": slide_plan.get("index", 0),
+                    "type": slide_type,
+                    "title": slide_title,
+                    "content": f"【{slide_title}】\n\n" + "、".join(key_points),
+                    "notes": ""
+                })
+        return default_slides
 
     async def generate_section_ppt_content(
         self,
