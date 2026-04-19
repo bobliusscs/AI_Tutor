@@ -55,3 +55,10 @@ backend/uploads/
 
 # Database files
 mindguide.db
+
+# Pip cache
+.pip_cache/
+.pip_tmp/
+
+# Temporary files
+temp/

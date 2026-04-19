@@ -363,3 +363,85 @@ export const skillAPI = {
   // 获取内置Skill列表
   listBuiltin: () => apiClient.get('/skills/builtin/list'),
 }
+
+// ============ TTS语音合成 API ============
+export const ttsAPI = {
+  // 获取指定节PPT所有幻灯片的讲解语音
+  getSlidesAudio: (sectionId, speaker = null) => {
+    const data = {}
+    if (speaker) data.speaker = speaker
+    return apiClient.post(`/tts/slides-audio/${sectionId}`, data, {
+      timeout: 300000, // TTS合成可能较慢，5分钟超时
+    })
+  },
+  // TTS服务健康检查
+  healthCheck: () => apiClient.get('/tts/health'),
+  // 获取单个幻灯片的讲解语音（用于实时播放模式）
+  getSingleSlideAudio: (sectionId, slideIndex, speaker = null) => {
+    const params = {}
+    if (speaker) params.speaker = speaker
+    return apiClient.get(`/tts/slide-audio/${sectionId}/${slideIndex}`, {
+      params,
+      timeout: 120000, // 单页TTS合成超时2分钟
+    })
+  },
+  // 批量合成所有幻灯片语音（SSE流式）
+  synthesizeAllAudio: async (sectionId, speaker = null, onProgress) => {
+    const url = `${apiClient.defaults.baseURL}/tts/synthesize-all/${sectionId}`
+    const data = {}
+    if (speaker) data.speaker = speaker
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+      },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+    
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.slice(6)
+          try {
+            const data = JSON.parse(dataStr)
+            if (onProgress) {
+              onProgress(data)
+            }
+            
+            if (data.type === 'complete') {
+              return data
+            }
+            if (data.type === 'error') {
+              throw new Error(data.message)
+            }
+          } catch (e) {
+            // SyntaxError 是 JSON 解析失败，只打印日志
+            // 其他错误是业务错误，需要向上传播
+            if (e instanceof SyntaxError) {
+              console.error('解析SSE数据失败:', e, dataStr)
+            } else {
+              throw e
+            }
+          }
+        }
+      }
+    }
+  },
+}

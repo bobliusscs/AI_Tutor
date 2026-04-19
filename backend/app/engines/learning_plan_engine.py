@@ -790,6 +790,7 @@ class LearningPlanEngine:
                     "learning_objectives": section.learning_objectives or [],
                     "estimated_minutes": section.estimated_minutes,
                     "ppt_generated": section.ppt_generated,
+                    "slides": section.ppt_content if section.ppt_generated else [],
                     "lessons": [
                         {
                             "id": lesson.id,
@@ -1189,7 +1190,7 @@ class LearningPlanEngine:
             section.ppt_content = all_slides
             self.db.commit()
             
-            return {"slides": all_slides}
+            return {"slides": section.ppt_content}
             
         except GenerationCancelledError:
             # 用户取消，返回已生成的部分内容

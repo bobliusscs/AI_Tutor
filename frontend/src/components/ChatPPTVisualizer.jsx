@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Tag, Tooltip, message } from 'antd'
+import { Tag, Tooltip, message, Slider } from 'antd'
 import {
   LeftOutlined,
   RightOutlined,
@@ -8,6 +8,8 @@ import {
   EditOutlined,
   CheckCircleOutlined,
   PlayCircleOutlined,
+  PauseCircleOutlined,
+  SoundOutlined,
   FileTextOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -23,11 +25,14 @@ import {
   CheckOutlined,
   StarOutlined,
   DownloadOutlined,
-  ExportOutlined
+  ExportOutlined,
+  VideoCameraOutlined,
+  LoadingOutlined
 } from '@ant-design/icons'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { ttsAPI } from '../utils/api'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
@@ -993,11 +998,23 @@ export function InlineMiniCard({ pptData, currentPage, onExpand }) {
 // 子组件: FullscreenViewer（全屏查看器）
 // ─────────────────────────────────────────────────────────────────────────────
 
-function FullscreenViewer({ pptData, currentPage, onPageChange, onCollapse }) {
+export function FullscreenViewer({ pptData, currentPage, onPageChange, onCollapse }) {
   const [direction, setDirection] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [showNotes, setShowNotes] = useState(true)
   const [exporting, setExporting] = useState(false)
+
+  // ====== 音频播放相关状态 ======
+  const [playMode, setPlayMode] = useState('manual') // manual | auto
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [audioCache, setAudioCache] = useState({})  // {pageIndex: {audio: Audio, duration}}
+  const [playingPageIndex, setPlayingPageIndex] = useState(-1)
+  const [audioProgress, setAudioProgress] = useState(0) // 0-100
+  const [audioReady, setAudioReady] = useState(false) // 音频是否已预加载
+  const currentAudioRef = useRef(null)
+  const animFrameRef = useRef(null)
+  const autoPlayTimerRef = useRef(null)
+  // =================================
 
   const { slides, ppt_type, chapter_title, section_title } = pptData
   const totalSlides = slides?.length || 0
@@ -1021,6 +1038,304 @@ function FullscreenViewer({ pptData, currentPage, onPageChange, onCollapse }) {
     }
   }, [currentPage, totalSlides, onPageChange])
 
+  // ====== TTS语音播报功能 ======
+
+  // 初始化时预加载所有音频
+  useEffect(() => {
+    if (!slides || slides.length === 0) return
+    
+    const loadAudio = (slide, index) => {
+      // 优先使用 audio_url（文件存储），兼容旧的 audio_base64
+      let audioSrc = null
+      if (slide.audio_url) {
+        audioSrc = slide.audio_url
+      } else if (slide.audio_base64) {
+        audioSrc = `data:audio/wav;base64,${slide.audio_base64}`
+      }
+      if (!audioSrc) return
+      
+      const audio = new Audio(audioSrc)
+      audio.preload = 'auto'
+      audio.oncanplaythrough = () => {
+        setAudioCache(prev => ({
+          ...prev,
+          [index]: {
+            audio,
+            duration: slide.audio_duration || audio.duration || 0
+          }
+        }))
+      }
+      audio.onerror = () => {
+        console.warn(`第${index}页音频加载失败`)
+      }
+    }
+    
+    slides.forEach((slide, index) => loadAudio(slide, index))
+  }, [slides])
+
+  // 检测音频是否全部加载完成
+  useEffect(() => {
+    if (!slides || slides.length === 0) {
+      setAudioReady(false)
+      return
+    }
+    
+    const hasAudioCount = slides.filter(s => s.audio_url || s.audio_base64).length
+    const cachedCount = Object.keys(audioCache).length
+    setAudioReady(cachedCount >= hasAudioCount)
+  }, [audioCache, slides])
+
+  // 停止当前音频播放
+  const stopCurrentAudio = useCallback(() => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause()
+      currentAudioRef.current.currentTime = 0
+      currentAudioRef.current = null
+    }
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current)
+      animFrameRef.current = null
+    }
+    if (autoPlayTimerRef.current) {
+      clearTimeout(autoPlayTimerRef.current)
+      autoPlayTimerRef.current = null
+    }
+    setIsPlaying(false)
+    setPlayingPageIndex(-1)
+    setAudioProgress(0)
+  }, [])
+
+  // 更新音频进度
+  const updateProgress = useCallback(() => {
+    const audio = currentAudioRef.current
+    if (audio && audio.duration) {
+      const pct = (audio.currentTime / audio.duration) * 100
+      setAudioProgress(pct)
+    }
+    if (currentAudioRef.current && !currentAudioRef.current.paused && !currentAudioRef.current.ended) {
+      animFrameRef.current = requestAnimationFrame(updateProgress)
+    }
+  }, [])
+
+  // 播放指定页的音频
+  const playSlideAudio = useCallback((pageIndex) => {
+    const cached = audioCache[pageIndex]
+    if (!cached?.audio) return false
+  
+    // 停止当前
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause()
+      currentAudioRef.current.currentTime = 0
+    }
+  
+    const audio = cached.audio
+    currentAudioRef.current = audio
+    setPlayingPageIndex(pageIndex)
+    setIsPlaying(true)
+    setAudioProgress(0)
+      
+    // 使用 ref 保存当前页码，避免闭包问题
+    const currentPageRef = { value: pageIndex }
+  
+    audio.onended = () => {
+      setAudioProgress(100)
+      // 自动播放下一页（使用 ref 获取当前页码）
+      const currPage = currentPageRef.value
+      if (currPage < totalSlides - 1) {
+        autoPlayTimerRef.current = setTimeout(() => {
+          onPageChange?.(currPage + 1)
+          // 延迟等翻页动画完成后播放
+          setTimeout(() => {
+            const nextCached = audioCache[currPage + 1]
+            if (nextCached?.audio) {
+              if (currentAudioRef.current) {
+                currentAudioRef.current.pause()
+                currentAudioRef.current.currentTime = 0
+              }
+              const nextAudio = nextCached.audio
+              currentAudioRef.current = nextAudio
+              setPlayingPageIndex(currPage + 1)
+              setAudioProgress(0)
+              nextAudio.play().catch(err => console.error('播放失败:', err))
+            }
+          }, 400)
+        }, 500)
+      } else {
+        // 最后一页播放完毕
+        setIsPlaying(false)
+        setPlayingPageIndex(-1)
+        setAudioProgress(0)
+      }
+    }
+  
+    audio.onerror = () => {
+      console.error(`第${pageIndex}页音频播放失败`)
+      // 跳过失败的页，继续下一页
+      const currPage = currentPageRef.value
+      if (currPage < totalSlides - 1) {
+        autoPlayTimerRef.current = setTimeout(() => {
+          onPageChange?.(currPage + 1)
+          setTimeout(() => {
+            const nextCached = audioCache[currPage + 1]
+            if (nextCached?.audio) {
+              if (currentAudioRef.current) {
+                currentAudioRef.current.pause()
+                currentAudioRef.current.currentTime = 0
+              }
+              const nextAudio = nextCached.audio
+              currentAudioRef.current = nextAudio
+              setPlayingPageIndex(currPage + 1)
+              setAudioProgress(0)
+              nextAudio.play().catch(err => console.error('播放失败:', err))
+            }
+          }, 400)
+        }, 300)
+      } else {
+        setIsPlaying(false)
+        setPlayingPageIndex(-1)
+      }
+    }
+  
+    audio.play().catch(err => console.error('音频播放异常:', err))
+    animFrameRef.current = requestAnimationFrame(updateProgress)
+    return true
+  }, [audioCache, totalSlides, onPageChange, updateProgress])
+  
+  // 播放指定页音频
+  const playPageAudio = useCallback((pageIndex, audio) => {
+    // 停止当前音频
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause()
+      currentAudioRef.current.currentTime = 0
+    }
+  
+    currentAudioRef.current = audio
+    setPlayingPageIndex(pageIndex)
+    setIsPlaying(true)
+    setAudioProgress(0)
+  
+    // 使用 ref 保存当前页码
+    const currentPageRef = { value: pageIndex }
+  
+    // 设置音频结束回调
+    audio.onended = () => {
+      setAudioProgress(100)
+      const currPage = currentPageRef.value
+  
+      if (currPage < totalSlides - 1) {
+        // 翻到下一页
+        autoPlayTimerRef.current = setTimeout(() => {
+          onPageChange?.(currPage + 1)
+        }, 300)
+      } else {
+        // 最后一页播放完毕
+        setIsPlaying(false)
+        setPlayingPageIndex(-1)
+        setAudioProgress(0)
+      }
+    }
+  
+    audio.onerror = () => {
+      console.error(`第${pageIndex}页音频播放失败`)
+      const currPage = currentPageRef.value
+      if (currPage < totalSlides - 1) {
+        autoPlayTimerRef.current = setTimeout(() => {
+          onPageChange?.(currPage + 1)
+        }, 300)
+      } else {
+        setIsPlaying(false)
+        setPlayingPageIndex(-1)
+      }
+    }
+  
+    audio.play().catch(err => console.error('播放失败:', err))
+    animFrameRef.current = requestAnimationFrame(updateProgress)
+  }, [onPageChange, updateProgress, totalSlides])
+  
+  // 播报模式下翻页后自动播放
+  useEffect(() => {
+    if (playMode !== 'auto') return
+    if (playingPageIndex === currentPage) return
+  
+    // 检查缓存中是否有当前页音频
+    const cached = audioCache[currentPage]
+    if (cached?.audio) {
+      playPageAudio(currentPage, cached.audio)
+    } else {
+      // 无音频幻灯片：3秒后自动跳转下一页
+      const timer = setTimeout(() => {
+        if (currentPage < totalSlides - 1) {
+          onPageChange?.(currentPage + 1)
+        } else {
+          // 最后一页，结束播报
+          setIsPlaying(false)
+          setPlayingPageIndex(-1)
+          setAudioProgress(0)
+        }
+      }, 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [currentPage, playMode, playingPageIndex, audioCache, playPageAudio, totalSlides, onPageChange])
+
+  // 暂停/继续播报
+  const handleTogglePause = useCallback(() => {
+    const audio = currentAudioRef.current
+    if (!audio) return
+    
+    if (!audio.paused) {
+      // 暂停音频
+      audio.pause()
+      setIsPlaying(false)
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current)
+        animFrameRef.current = null
+      }
+      return
+    }
+    
+    // 继续播放
+    audio.play().catch(err => console.error('继续播放失败:', err))
+    setIsPlaying(true)
+    animFrameRef.current = requestAnimationFrame(updateProgress)
+  }, [updateProgress])
+
+  // 停止播报
+  const handleStopNarration = useCallback(() => {
+    stopCurrentAudio()
+    setPlayMode('manual')
+  }, [stopCurrentAudio])
+
+  // 开始播报 - 直接播放已预加载的音频
+  const handleStartNarration = useCallback(() => {
+    // 检查当前页是否有音频
+    const cached = audioCache[currentPage]
+    if (!cached?.audio) {
+      message.warning('当前页没有讲解语音')
+      return
+    }
+    
+    // 进入自动播放模式
+    setPlayMode('auto')
+    
+    // 播放当前页
+    playPageAudio(currentPage, cached.audio)
+  }, [currentPage, audioCache, playPageAudio])
+
+  // 组件卸载时清理音频
+  useEffect(() => {
+    return () => {
+      stopCurrentAudio()
+      // 清理所有缓存的Audio对象
+      Object.values(audioCache).forEach(c => {
+        if (c.audio) {
+          c.audio.pause()
+          c.audio.src = ''
+        }
+      })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // =================================
+
   const handleExport = useCallback(async () => {
     if (exporting) return
     setExporting(true)
@@ -1037,13 +1352,23 @@ function FullscreenViewer({ pptData, currentPage, onPageChange, onCollapse }) {
 
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (playMode === 'auto') {
+        // 播报模式下的快捷键
+        if (e.key === ' ' || e.key === 'p') {
+          e.preventDefault()
+          handleTogglePause()
+        } else if (e.key === 'Escape' || e.key === 'q') {
+          handleStopNarration()
+        }
+        return
+      }
       if (e.key === 'ArrowLeft') goToPrev()
       else if (e.key === 'ArrowRight' || e.key === ' ') goToNext()
       else if (e.key === 'n') setShowNotes(prev => !prev)
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [goToNext, goToPrev])
+  }, [goToNext, goToPrev, playMode, handleTogglePause, handleStopNarration])
 
   return (
     <motion.div
@@ -1083,20 +1408,93 @@ function FullscreenViewer({ pptData, currentPage, onPageChange, onCollapse }) {
           
           {/* 导出按钮 */}
           <Tooltip title={exporting ? '导出中...' : '导出PPT'}>
-            <button onClick={handleExport} disabled={exporting} style={{
+            <button onClick={handleExport} disabled={exporting || playMode === 'auto'} style={{
               background: exporting ? 'rgba(99,102,241,0.4)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-              border: 'none', borderRadius: 8, padding: '6px 12px', cursor: exporting ? 'wait' : 'pointer',
+              border: 'none', borderRadius: 8, padding: '6px 12px', cursor: (exporting || playMode === 'auto') ? 'not-allowed' : 'pointer',
               display: 'flex', alignItems: 'center', gap: 6,
               color: '#fff', fontSize: 12, fontWeight: 600, transition: 'all 0.2s',
-              boxShadow: '0 2px 8px rgba(99,102,241,0.3)'
+              boxShadow: '0 2px 8px rgba(99,102,241,0.3)',
+              opacity: playMode === 'auto' ? 0.5 : 1
             }}
-              onMouseEnter={(e) => { if (!exporting) e.currentTarget.style.boxShadow = '0 4px 16px rgba(99,102,241,0.5)' }}
+              onMouseEnter={(e) => { if (!exporting && playMode !== 'auto') e.currentTarget.style.boxShadow = '0 4px 16px rgba(99,102,241,0.5)' }}
               onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '0 2px 8px rgba(99,102,241,0.3)' }}
             >
               <DownloadOutlined style={{ fontSize: 13 }} />
               {exporting ? '导出中...' : '导出'}
             </button>
           </Tooltip>
+
+          {/* 语音播报按钮 */}
+          {playMode === 'manual' ? (
+            <Tooltip title={!audioReady ? '音频加载中...' : (!audioCache[currentPage] ? '当前页无语音' : '语音播报')}>
+              <button
+                onClick={handleStartNarration}
+                disabled={!audioReady || !audioCache[currentPage]}
+                style={{
+                  background: !audioCache[currentPage]
+                    ? 'rgba(255,255,255,0.05)'
+                    : 'linear-gradient(135deg, #10B981, #059669)',
+                  border: 'none', borderRadius: 8, padding: '6px 12px',
+                  cursor: !audioCache[currentPage] ? 'not-allowed' : 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  color: !audioCache[currentPage] ? 'rgba(255,255,255,0.3)' : '#fff',
+                  fontSize: 12, fontWeight: 600, transition: 'all 0.2s',
+                  boxShadow: !audioCache[currentPage] ? 'none' : '0 2px 8px rgba(16,185,129,0.3)',
+                  opacity: !audioCache[currentPage] ? 0.5 : 1
+                }}
+                onMouseEnter={(e) => { if (audioCache[currentPage]) e.currentTarget.style.boxShadow = '0 4px 16px rgba(16,185,129,0.5)' }}
+                onMouseLeave={(e) => { e.currentTarget.style.boxShadow = audioCache[currentPage] ? '0 2px 8px rgba(16,185,129,0.3)' : 'none' }}
+              >
+                <VideoCameraOutlined style={{ fontSize: 13 }} />
+                {!audioReady ? '加载中' : '播报'}
+              </button>
+            </Tooltip>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {/* 音频播放状态指示 */}
+              <Tooltip title="自动播放中">
+                <span style={{
+                  background: 'rgba(16,185,129,0.2)',
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11,
+                  color: 'rgba(255,255,255,0.8)', display: 'flex', alignItems: 'center', gap: 4
+                }}>
+                  <VideoCameraOutlined style={{ fontSize: 10 }} />
+                  自动播放
+                </span>
+              </Tooltip>
+              <Tooltip title={isPlaying ? '暂停 (空格)' : '继续 (空格)'}>
+                <button
+                  onClick={handleTogglePause}
+                  style={{
+                    background: isPlaying
+                      ? 'linear-gradient(135deg, #F59E0B, #D97706)'
+                      : 'linear-gradient(135deg, #10B981, #059669)',
+                    border: 'none', borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    color: '#fff', fontSize: 12, fontWeight: 600, transition: 'all 0.2s',
+                    boxShadow: `0 2px 8px ${isPlaying ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)'}`
+                  }}
+                >
+                  {isPlaying ? <PauseCircleOutlined style={{ fontSize: 13 }} /> : <PlayCircleOutlined style={{ fontSize: 13 }} />}
+                  {isPlaying ? '暂停' : '继续'}
+                </button>
+              </Tooltip>
+              <Tooltip title="停止播报 (Esc)">
+                <button
+                  onClick={handleStopNarration}
+                  style={{
+                    background: 'rgba(239,68,68,0.2)',
+                    border: '1px solid rgba(239,68,68,0.3)',
+                    borderRadius: 8, padding: '6px 10px', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 4,
+                    color: '#FCA5A5', fontSize: 12, transition: 'all 0.2s'
+                  }}
+                >
+                  停止
+                </button>
+              </Tooltip>
+            </div>
+          )}
 
           <Tooltip title={showNotes ? '隐藏讲稿' : '显示讲稿 (N)'}>
             <button onClick={() => setShowNotes(prev => !prev)} style={{
@@ -1258,8 +1656,23 @@ function FullscreenViewer({ pptData, currentPage, onPageChange, onCollapse }) {
                   <div style={{ 
                     fontSize: 12, 
                     color: isFullScreenSlide ? 'rgba(255,255,255,0.85)' : '#78350F', 
-                    lineHeight: 1.7 
-                  }}>{currentSlide.notes}</div>
+                    lineHeight: 1.7,
+                    position: 'relative'
+                  }}>
+                    {currentSlide.notes}
+                    {/* 播报指示器 */}
+                    {playMode === 'auto' && playingPageIndex === currentPage && isPlaying && (
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 3,
+                        marginLeft: 8, verticalAlign: 'middle',
+                        background: 'rgba(16,185,129,0.15)', padding: '1px 6px',
+                        borderRadius: 4, fontSize: 10, color: '#10B981', fontWeight: 700
+                      }}>
+                        <SoundOutlined style={{ fontSize: 10 }} />
+                        播报中
+                      </span>
+                    )}
+                  </div>
                 </motion.div>
               )}
             </motion.div>
@@ -1283,19 +1696,47 @@ function FullscreenViewer({ pptData, currentPage, onPageChange, onCollapse }) {
         padding: '10px 24px', background: 'linear-gradient(180deg, transparent 0%, rgba(15,23,42,0.9) 100%)',
         display: 'flex', alignItems: 'center', gap: 12
       }}>
+        {playMode === 'auto' && playingPageIndex >= 0 ? (
+          <>
+            <SoundOutlined style={{ color: '#10B981', fontSize: 14, animation: isPlaying ? 'pulse 1.5s infinite' : 'none' }} />
+            <span style={{ color: '#10B981', fontSize: 12, fontWeight: 600, minWidth: 40 }}>
+              {Math.round(audioProgress)}%
+            </span>
+          </>
+        ) : null}
         <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, minWidth: 80 }}>
           第 {currentPage + 1} 页 / 共 {totalSlides} 页
         </span>
-        <div style={{ flex: 1, height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden' }}>
+        <div style={{ flex: 1, height: playMode === 'auto' ? 6 : 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden', position: 'relative' }}>
+          {/* 翻页进度 */}
           <motion.div
             initial={false}
             animate={{ width: `${((currentPage + 1) / totalSlides) * 100}%` }}
             transition={{ duration: 0.3 }}
-            style={{ height: '100%', background: slideConfig.gradient, borderRadius: 2 }}
+            style={{ height: '100%', background: playMode === 'auto' ? 'rgba(16,185,129,0.3)' : slideConfig.gradient, borderRadius: 2, position: 'absolute', top: 0, left: 0 }}
           />
+          {/* 播报模式下显示音频进度 */}
+          {playMode === 'auto' && playingPageIndex === currentPage && (
+            <div style={{
+              height: '100%', width: `${audioProgress}%`,
+              background: 'linear-gradient(90deg, #10B981, #059669)',
+              borderRadius: 2, position: 'absolute', top: 0, left: 0,
+              transition: 'width 0.1s linear'
+            }} />
+          )}
         </div>
-        <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>按 N 键切换讲稿</span>
+        {playMode === 'auto' ? (
+          <span style={{ fontSize: 10, color: 'rgba(16,185,129,0.7)' }}>空格暂停 | Esc停止</span>
+        ) : (
+          <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>按 N 键切换讲稿</span>
+        )}
       </div>
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </motion.div>
   )
 }

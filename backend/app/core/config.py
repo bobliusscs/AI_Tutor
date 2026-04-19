@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # Agent 配置
     WORKSPACE_ROOT: str = "."  # 工作空间根目录（用于加载 Skills）
 
+    # CosyVoice TTS 配置
+    COSYVOICE_API_URL: str = "http://localhost:6006"
+    COSYVOICE_DEFAULT_SPEAKER: str = "中文女"
+    TTS_ENABLED: bool = True
+
 
 # 全局配置实例
 settings = Settings()

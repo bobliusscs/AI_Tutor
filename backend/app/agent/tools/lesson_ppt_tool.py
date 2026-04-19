@@ -261,6 +261,7 @@ async def get_current_lesson_ppt(
             "lesson_number": target_lesson.lesson_number,
             "chapter_number": target_chapter.chapter_number if target_chapter else None,
             "chapter_title": target_chapter.title if target_chapter else "",
+            "section_id": target_section.id if target_section else None,
             "section_number": target_section.section_number if target_section else None,
             "section_title": target_section.title if target_section else "",
             "slide_count": len(slides),
@@ -320,6 +321,8 @@ def _adapt_section_ppt(section_ppt_content: list, target_lesson, chapter=None, s
             "layout": slide.get("layout", "focus"),
             "title": slide.get("title", ""),
             "content": slide.get("content", ""),  # 可能是字符串或JSON对象
+            "audio_url": slide.get("audio_url", ""),
+            "audio_duration": slide.get("audio_duration", 0),
         }
         
         # 保留notes（讲者备注）
@@ -371,7 +374,9 @@ def _build_slides_from_lesson(lesson, chapter=None, section=None) -> list:
             "subtitle": location_str,
             "objectives": objectives[:3]
         },
-        "notes": f"欢迎学习本课时的内容。本课时的主题是{lesson.title}。"
+        "notes": f"欢迎学习本课时的内容。本课时的主题是{lesson.title}。",
+        "audio_url": "",
+        "audio_duration": 0
     })
     
     # 2. 引入页
@@ -385,7 +390,9 @@ def _build_slides_from_lesson(lesson, chapter=None, section=None) -> list:
                 "question": f"为什么{lesson.title}如此重要？",
                 "answer_hint": "让我们一起来探索"
             },
-            "notes": "通过生动的例子引入本节课的主题。"
+            "notes": "通过生动的例子引入本节课的主题。",
+            "audio_url": "",
+            "audio_duration": 0
         })
     
     # 3. 核心讲解
@@ -408,7 +415,9 @@ def _build_slides_from_lesson(lesson, chapter=None, section=None) -> list:
                         {"title": "核心内容", "detail": lesson.explanation, "icon": "lightbulb"}
                     ]
                 },
-                "notes": "详细讲解核心概念和原理。"
+                "notes": "详细讲解核心概念和原理。",
+                "audio_url": "",
+                "audio_duration": 0
             })
         else:
             points = []
@@ -429,7 +438,9 @@ def _build_slides_from_lesson(lesson, chapter=None, section=None) -> list:
                     "main_idea": f"深入理解{lesson.title}的核心原理",
                     "points": points
                 },
-                "notes": "详细讲解核心概念和原理。"
+                "notes": "详细讲解核心概念和原理。",
+                "audio_url": "",
+                "audio_duration": 0
             })
     
     # 4. 示例页
@@ -446,7 +457,9 @@ def _build_slides_from_lesson(lesson, chapter=None, section=None) -> list:
                 ],
                 "insight": "通过具体示例帮助理解。"
             },
-            "notes": "通过具体示例帮助理解。"
+            "notes": "通过具体示例帮助理解。",
+            "audio_url": "",
+            "audio_duration": 0
         })
     
     # 5. 练习题
@@ -465,7 +478,9 @@ def _build_slides_from_lesson(lesson, chapter=None, section=None) -> list:
                 "title": "巩固练习",
                 "content": "请完成以下练习题：",
                 "questions": exercises,
-                "notes": "让学生独立完成练习，然后讲解答案。"
+                "notes": "让学生独立完成练习，然后讲解答案。",
+                "audio_url": "",
+                "audio_duration": 0
             })
     
     # 6. 总结页
@@ -488,7 +503,9 @@ def _build_slides_from_lesson(lesson, chapter=None, section=None) -> list:
                 "key_takeaways": summary_points[:5],
                 "mind_map_hint": f"{lesson.title}知识结构"
             },
-            "notes": "总结本节课的重点内容。"
+            "notes": "总结本节课的重点内容。",
+            "audio_url": "",
+            "audio_duration": 0
         })
     
     # 7. 结束页
@@ -500,7 +517,9 @@ def _build_slides_from_lesson(lesson, chapter=None, section=None) -> list:
             "message": f"恭喜完成「{lesson.title}」的学习！",
             "review_tip": f"建议复习{lesson.title}的核心概念"
         },
-        "notes": "本课时学习完成，鼓励学生继续。"
+        "notes": "本课时学习完成，鼓励学生继续。",
+        "audio_url": "",
+        "audio_duration": 0
     })
     
     return slides

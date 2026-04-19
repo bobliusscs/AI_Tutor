@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     knowledge_graph, learning_plan, lesson, assessment, memory, 
     student, chat, study_goal, analysis, material, question, settings, agent, skill_manager,
-    practice
+    practice, tts
 )
 
 api_router = APIRouter()
@@ -32,3 +32,6 @@ api_router.include_router(practice.router, prefix="/practice", tags=["练习巩�
 
 # Skill管理路由
 api_router.include_router(skill_manager.router, prefix="/skills", tags=["Skill管理"])
+
+# TTS语音合成路由
+api_router.include_router(tts.router, prefix="/tts", tags=["语音合成"])

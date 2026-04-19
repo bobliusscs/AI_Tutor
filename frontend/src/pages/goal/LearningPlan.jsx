@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button, Tag, Typography, message, Empty, Collapse, Spin, Modal, Space, Progress } from 'antd'
 import {
   PlayCircleOutlined,
@@ -17,10 +17,12 @@ import {
   MergeCellsOutlined,
   SolutionOutlined,
   UnorderedListOutlined,
+  SoundOutlined,
 } from '@ant-design/icons'
 import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { learningPlanAPI, studyGoalAPI } from '../../utils/api'
+import { learningPlanAPI, studyGoalAPI, ttsAPI } from '../../utils/api'
+import { FullscreenViewer } from '../../components/ChatPPTVisualizer'
 
 const { Text } = Typography
 const { Panel } = Collapse
@@ -38,6 +40,7 @@ function LearningPlan() {
   const [expandedChapters, setExpandedChapters] = useState([]) // 展开的章节
   const [generatingPPT, setGeneratingPPT] = useState({}) // 记录正在生成PPT的章节/节
   const [pptModal, setPptModal] = useState({ visible: false, slides: [], title: '' })
+  const [fullscreenPPT, setFullscreenPPT] = useState(null)  // { pptData, currentPage }
   const [generatingPlan, setGeneratingPlan] = useState(false) // 是否正在生成学习计划
   const [generatingProgress, setGeneratingProgress] = useState(0) // 生成进度百分比
   const [generatingMessage, setGeneratingMessage] = useState('') // 生成进度消息
@@ -73,9 +76,44 @@ function LearningPlan() {
     message: '',
     results: [] // 记录每个小节的生成结果
   })
+  // TTS合成进度状态
+  const [ttsProgressInfo, setTtsProgressInfo] = useState({
+    sectionId: null,
+    sectionTitle: '',
+    total: 0,
+    current: 0,
+    success: 0,
+    skipped: 0,
+    failed: 0,
+    status: 'idle', // idle | preparing | generating | completed | cancelled
+    message: '准备开始...'
+  })
+  const [showTTSProgressModal, setShowTTSProgressModal] = useState(false) // TTS进度弹窗显示状态
+  const ttsCancelledRef = useRef(false) // TTS合成取消标志（使用ref确保闭包内可访问）
   const [showResetModal, setShowResetModal] = useState(false) // 重置进度确认弹窗
 
   useEffect(() => { fetchData() }, [goalId])
+  
+  // 检查节PPT是否有语音
+  const checkSectionHasAudio = (section) => {
+    if (!section.ppt_generated || !section.slides || section.slides.length === 0) {
+      return false
+    }
+    // 兼容两种格式：audio_url 和 audio_base64
+    return section.slides.some(slide => slide.audio_url || slide.audio_base64)
+  }
+
+  // 检查章节是否有任何小节已合成语音（用于章节级别的"学习视频"按钮）
+  const checkChapterHasAudio = (chapter) => {
+    if (!chapter.sections || chapter.sections.length === 0) return false
+    return chapter.sections.some(section => checkSectionHasAudio(section))
+  }
+
+  // 检查章节是否所有小节都已合成语音（用于显示不同状态的标记）
+  const checkChapterAllHasAudio = (chapter) => {
+    if (!chapter.sections || chapter.sections.length === 0) return false
+    return chapter.sections.every(section => section.ppt_generated && checkSectionHasAudio(section))
+  }
 
   const fetchData = async () => {
     setLoading(true)
@@ -657,11 +695,27 @@ function LearningPlan() {
     try {
       const result = await learningPlanAPI.getSectionPPT(sectionId)
       if (result.data?.success && result.data.data?.slides?.length > 0) {
-        setPptModal({
-          visible: true,
-          slides: result.data.data.slides,
-          title: sectionTitle
-        })
+        const slides = result.data.data.slides
+        // 检查是否有音频数据，有则使用全屏查看器
+        const hasAudio = slides.some(s => s.audio_url || s.audio_base64)
+        if (hasAudio) {
+          setFullscreenPPT({
+            pptData: {
+              slides,
+              ppt_type: 'section',
+              section_title: sectionTitle,
+              chapter_title: ''
+            },
+            currentPage: 0
+          })
+        } else {
+          // 降级：无音频时使用简单Modal预览
+          setPptModal({
+            visible: true,
+            slides,
+            title: sectionTitle
+          })
+        }
       } else {
         message.warning('暂无可查看的PPT内容')
       }
@@ -673,6 +727,29 @@ function LearningPlan() {
         delete newState[sectionId]
         return newState
       })
+    }
+  }
+
+  // 学习PPT（直接进入自动播报模式）
+  const handleLearnPPT = async (sectionId, sectionTitle) => {
+    try {
+      const result = await learningPlanAPI.getSectionPPT(sectionId)
+      if (result.data?.success && result.data.data?.slides?.length > 0) {
+        const slides = result.data.data.slides
+        setFullscreenPPT({
+          pptData: {
+            slides: slides,
+            ppt_type: 'section',
+            section_title: sectionTitle
+          },
+          currentPage: 0,
+          autoPlay: true  // 标记自动播放
+        })
+      } else {
+        message.warning('该节暂无PPT内容')
+      }
+    } catch (error) {
+      message.error('获取PPT数据失败')
     }
   }
 
@@ -783,6 +860,220 @@ function LearningPlan() {
     }
   }
 
+  // TTS进度渲染组件
+  const TTSProgressContent = ({ progress, onCancel, isCancelled }) => {
+    const getStatusContent = () => {
+      if (progress.status === 'completed') {
+        return (
+          <>
+            <span style={{ color: '#52c41a', fontWeight: 'bold' }}>✓</span>
+            <span style={{ color: '#333' }}>合成完成！</span>
+          </>
+        )
+      }
+      if (isCancelled) {
+        return (
+          <>
+            <span style={{ color: '#ff4d4f', fontWeight: 'bold' }}>✕</span>
+            <span style={{ color: '#ff4d4f' }}>已取消</span>
+          </>
+        )
+      }
+      return (
+        <>
+          <div style={{ width: 16, height: 16, border: '2px solid rgba(99,102,241,0.3)', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+          <span style={{ color: '#333' }}>{progress.message}</span>
+        </>
+      )
+    }
+
+    return (
+      <div>
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 'bold', marginBottom: 8 }}>正在为「{progress.sectionTitle}」合成讲解语音</div>
+          <div style={{ color: '#666' }}>请耐心等待，这将需要几分钟时间...</div>
+        </div>
+        
+        {/* 总体进度条 */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ fontSize: 14, fontWeight: 500 }}>总体进度</span>
+            <span style={{ fontSize: 14, color: '#6366f1' }}>
+              {progress.current}/{progress.total} 页
+            </span>
+          </div>
+          <div style={{ height: 8, background: '#f0f0f0', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{
+              height: '100%',
+              width: `${progress.total > 0 ? (progress.current / progress.total * 100) : 0}%`,
+              background: 'linear-gradient(90deg, #6366f1, #8b5cf6)',
+              transition: 'width 0.3s ease',
+              borderRadius: 4
+            }} />
+          </div>
+        </div>
+        
+        {/* 当前状态 */}
+        <div style={{
+          padding: 12,
+          background: '#f5f5f5',
+          borderRadius: 8,
+          marginBottom: 12,
+          minHeight: 40,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8
+        }}>
+          {getStatusContent()}
+        </div>
+        
+        {/* 统计信息 */}
+        <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+          <div style={{ flex: 1, padding: 8, background: '#f6ffed', borderRadius: 6, textAlign: 'center' }}>
+            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#52c41a' }}>{progress.success}</div>
+            <div style={{ fontSize: 12, color: '#666' }}>成功</div>
+          </div>
+          <div style={{ flex: 1, padding: 8, background: '#fff7e6', borderRadius: 6, textAlign: 'center' }}>
+            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#faad14' }}>{progress.skipped}</div>
+            <div style={{ fontSize: 12, color: '#666' }}>跳过</div>
+          </div>
+          <div style={{ flex: 1, padding: 8, background: '#fff1f0', borderRadius: 6, textAlign: 'center' }}>
+            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#ff4d4f' }}>{progress.failed}</div>
+            <div style={{ fontSize: 12, color: '#666' }}>失败</div>
+          </div>
+        </div>
+        
+        {/* 取消按钮 */}
+        {progress.status !== 'completed' && !isCancelled && (
+          <div style={{ textAlign: 'center' }}>
+            <Button 
+              type="text" 
+              danger
+              onClick={onCancel}
+            >
+              取消合成
+            </Button>
+          </div>
+        )}
+        
+        <style>{`@keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }`}</style>
+      </div>
+    )
+  }
+
+  // 合成节PPT语音（同步执行，显示进度）
+  const handleSynthesizeSectionAudio = async (sectionId, sectionTitle) => {
+    // 初始化进度状态
+    ttsCancelledRef.current = false
+    setTtsProgressInfo({
+      sectionId,
+      sectionTitle,
+      total: 0,
+      current: 0,
+      success: 0,
+      skipped: 0,
+      failed: 0,
+      status: 'preparing',
+      message: '准备开始...'
+    })
+    setShowTTSProgressModal(true)
+
+    try {
+      await ttsAPI.synthesizeAllAudio(sectionId, null, (data) => {
+        // 如果已取消，忽略后续事件
+        if (ttsCancelledRef.current) return
+        
+        // 使用函数式更新确保获取最新状态
+        setTtsProgressInfo(prev => {
+          const newProgress = { ...prev }
+          
+          if (data.type === 'start') {
+            newProgress.total = data.total
+            newProgress.status = 'generating'
+            newProgress.message = '开始合成...'
+          } else if (data.type === 'progress') {
+            newProgress.message = data.message
+          } else if (data.type === 'page_complete') {
+            // 直接使用后端返回的页码更新进度
+            newProgress.current = data.page
+            if (data.status === 'success') newProgress.success++
+            else if (data.status === 'skipped') newProgress.skipped++
+            else if (data.status === 'failed') newProgress.failed++
+            newProgress.message = data.message
+          } else if (data.type === 'complete') {
+            newProgress.status = 'completed'
+            newProgress.success = data.synthesized_count
+            newProgress.skipped = data.skipped_count
+            newProgress.failed = data.failed_count
+            newProgress.current = data.total
+            newProgress.message = '合成完成！'
+          }
+          
+          return newProgress
+        })
+      })
+
+      // 关闭进度弹窗
+      setShowTTSProgressModal(false)
+
+      // 如果已取消，不显示成功弹窗
+      if (ttsCancelledRef.current) {
+        return
+      }
+
+      // 先刷新数据，再显示完成弹窗
+      await fetchData()
+
+      // 读取最终统计
+      setTtsProgressInfo(prev => {
+        // 显示最终结果
+        Modal.confirm({
+          title: '语音合成完成',
+          content: (
+            <div>
+              <div style={{ marginBottom: 12 }}>语音合成完成！</div>
+              <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+                <div style={{ flex: 1, padding: 12, background: '#f6ffed', borderRadius: 8, textAlign: 'center' }}>
+                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#52c41a' }}>{prev.success}</div>
+                  <div style={{ fontSize: 13, color: '#666' }}>成功</div>
+                </div>
+                <div style={{ flex: 1, padding: 12, background: '#fff7e6', borderRadius: 8, textAlign: 'center' }}>
+                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#faad14' }}>{prev.skipped}</div>
+                  <div style={{ fontSize: 13, color: '#666' }}>跳过</div>
+                </div>
+                <div style={{ flex: 1, padding: 12, background: '#fff1f0', borderRadius: 8, textAlign: 'center' }}>
+                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#ff4d4f' }}>{prev.failed}</div>
+                  <div style={{ fontSize: 13, color: '#666' }}>失败</div>
+                </div>
+              </div>
+            </div>
+          ),
+          okText: '立即学习',
+          cancelText: '关闭',
+          onOk: () => {
+            handleLearnPPT(sectionId, sectionTitle)
+          },
+          onCancel: () => {
+            fetchData()
+          }
+        })
+        return prev // 不修改状态
+      })
+    } catch (error) {
+      setShowTTSProgressModal(false)
+      
+      // 如果是取消导致的错误，忽略
+      if (ttsCancelledRef.current) {
+        return
+      }
+      
+      console.error('语音合成失败:', error)
+      message.error({ 
+        content: '语音合成失败: ' + error.message 
+      })
+    }
+  }
+
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', gap: 16 }}>
@@ -851,6 +1142,25 @@ function LearningPlan() {
                     <Tag color="blue" style={{ margin: 0 }}>
                       <ClockCircleOutlined /> {chapter.estimated_minutes || 0} 分钟
                     </Tag>
+                    {/* 学习视频标记 - 仅当至少一个小节已合成语音时显示 */}
+                    {checkChapterHasAudio(chapter) && (
+                      <Tag
+                        icon={<PlayCircleOutlined />}
+                        style={{
+                          borderRadius: 8,
+                          background: checkChapterAllHasAudio(chapter) ? '#f6ffed' : '#e6f7ff',
+                          borderColor: checkChapterAllHasAudio(chapter) ? '#52c41a' : '#1890ff',
+                          color: checkChapterAllHasAudio(chapter) ? '#52c41a' : '#1890ff',
+                          fontWeight: 600,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          cursor: 'default'
+                        }}
+                      >
+                        {checkChapterAllHasAudio(chapter) ? '全部已合成' : '学习视频'}
+                      </Tag>
+                    )}
                     <Button 
                       size="small" 
                       icon={isChapterGenerating ? <LoadingOutlined /> : <FilePptOutlined />}
@@ -944,6 +1254,38 @@ function LearningPlan() {
                               style={{ marginLeft: 8, borderRadius: 6 }}
                             >
                               查看PPT
+                            </Button>
+                          )}
+                          {/* 合成语音按钮 - 仅PPT已生成时显示 */}
+                          {section.ppt_generated && (
+                            <Button
+                              size="small"
+                              icon={checkSectionHasAudio(section) ? <CheckCircleOutlined /> : <SoundOutlined />}
+                              onClick={() => handleSynthesizeSectionAudio(section.id, section.title)}
+                              style={{ marginLeft: 8, borderRadius: 6, 
+                                background: checkSectionHasAudio(section) ? '#f6ffed' : undefined,
+                                borderColor: checkSectionHasAudio(section) ? '#52c41a' : '#d9d9d9',
+                                color: checkSectionHasAudio(section) ? '#52c41a' : undefined
+                              }}
+                            >
+                              {checkSectionHasAudio(section) ? '已合成' : '合成语音'}
+                            </Button>
+                          )}
+                          {/* 学习PPT按钮 - PPT已生成且有语音时显示 */}
+                          {section.ppt_generated && checkSectionHasAudio(section) && (
+                            <Button
+                              size="small"
+                              icon={<PlayCircleOutlined />}
+                              onClick={() => handleLearnPPT(section.id, section.title)}
+                              style={{
+                                marginLeft: 8,
+                                borderRadius: 6,
+                                background: '#e6f7ff',
+                                borderColor: '#1890ff',
+                                color: '#1890ff'
+                              }}
+                            >
+                              学习PPT
                             </Button>
                           )}
                           <Button 
@@ -2189,6 +2531,40 @@ function LearningPlan() {
           </Space>
         </div>
       </Modal>
+
+      {/* TTS语音合成进度弹窗 */}
+      <Modal
+        title={null}
+        open={showTTSProgressModal}
+        closable={false}
+        maskClosable={false}
+        footer={null}
+        width={600}
+        destroyOnClose
+      >
+        <TTSProgressContent 
+          progress={ttsProgressInfo} 
+          onCancel={() => {
+            ttsCancelledRef.current = true
+            setShowTTSProgressModal(false)
+            setTtsProgressInfo(prev => ({ ...prev, status: 'cancelled' }))
+            message.info('语音合成已取消')
+            fetchData()
+          }}
+          isCancelled={ttsProgressInfo.status === 'cancelled'}
+        />
+      </Modal>
+
+      {/* 全屏PPT查看器（带语音播报） */}
+      {fullscreenPPT && (
+        <FullscreenViewer
+          pptData={fullscreenPPT.pptData}
+          currentPage={fullscreenPPT.currentPage}
+          onPageChange={(page) => setFullscreenPPT(prev => prev ? { ...prev, currentPage: page } : null)}
+          onCollapse={() => setFullscreenPPT(null)}
+          autoPlay={fullscreenPPT.autoPlay}
+        />
+      )}
     </motion.div>
   )
 }
