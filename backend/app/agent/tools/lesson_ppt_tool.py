@@ -56,7 +56,8 @@ async def get_current_lesson_ppt(
         if not goal:
             return json.dumps({
                 "success": False,
-                "error": "学习目标不存在或无权访问"
+                "error": "学习目标不存在或无权访问",
+                "hint": "告知用户该学习目标不存在，建议重新选择"
             }, ensure_ascii=False)
         
         # ========== 2. 获取学习计划 ==========
@@ -68,7 +69,8 @@ async def get_current_lesson_ppt(
         if not plan:
             return json.dumps({
                 "success": False,
-                "error": "该学习目标还没有学习计划"
+                "error": "该学习目标还没有学习计划",
+                "hint": "告知用户需要先创建学习计划"
             }, ensure_ascii=False)
         
         # ========== 3. 定位当前课时和节 ==========
@@ -196,7 +198,8 @@ async def get_current_lesson_ppt(
         if not target_lesson:
             return json.dumps({
                 "success": False,
-                "error": "没有找到可学习的课时"
+                "error": "没有找到可学习的课时",
+                "hint": "告知用户当前没有可学习的课时，建议检查学习计划"
             }, ensure_ascii=False)
         
         # 补充获取章节信息（自动定位时可能还没获取）
@@ -224,28 +227,56 @@ async def get_current_lesson_ppt(
                 "is_current": l.id == target_lesson.id
             } for l in lessons_in_section]
         
-        # ========== 5. 获取课件内容（优先Section级PPT） ==========
+        # ========== 5. 获取课件内容（仅使用Section级真实PPT） ==========
         slides = None
         content_source = ""
         
-        # 优先使用Section级别的真实PPT课件
+        # 仅使用Section级别的真实PPT课件，不再回退到Lesson字段模板构建
         if target_section and target_section.ppt_generated and target_section.ppt_content:
             slides = _adapt_section_ppt(target_section.ppt_content, target_lesson, target_chapter, target_section)
             content_source = "section_ppt"
             logger.info(f"使用Section级PPT: section_id={target_section.id}, slides={len(slides)}")
         
-        # 回退：从Lesson字段构建简略课件
+        # 没有真实PPT课件 → 返回失败，提示用户先生成课件
         if not slides:
-            slides = _build_slides_from_lesson(target_lesson, target_chapter, target_section)
-            content_source = "lesson_fields"
-            logger.info(f"回退到Lesson字段构建: lesson_id={target_lesson.id}, slides={len(slides)}")
-        
-        # 检查是否有有效的课件内容（新格式：封面+结束页至少2页，但内容页才是关键）
-        content_slides = [s for s in slides if s.get("type") not in ("cover", "ending")]
-        if not content_slides:
+            # 构建友好的错误信息，包含章节定位信息
+            location_parts = []
+            if target_chapter:
+                location_parts.append(f"第{target_chapter.chapter_number}章")
+            if target_section:
+                location_parts.append(f"第{target_section.section_number}节")
+            location_str = " ".join(location_parts) if location_parts else ""
+            section_title = target_section.title if target_section else target_lesson.title
+            logger.info(f"Section级PPT未生成: section_id={target_section.id if target_section else '?'}")
             return json.dumps({
                 "success": False,
-                "error": "该课时还没有生成课件内容"
+                "error": f"{location_str}「{section_title}」还没有生成课件，请先在学习计划页面生成课件后再来学习",
+                "section_id": target_section.id if target_section else None,
+                "chapter_number": target_chapter.chapter_number if target_chapter else None,
+                "section_number": target_section.section_number if target_section else None,
+                "section_title": section_title,
+                "hint": "提示用户前往学习计划页面生成课件后再来学习"
+            }, ensure_ascii=False)
+        
+        # 检查是否有有效的课件内容（内容页为空则视为无效）
+        content_slides = [s for s in slides if s.get("type") not in ("cover", "ending")]
+        if not content_slides:
+            # 构建友好的错误信息，包含章节定位信息
+            location_parts = []
+            if target_chapter:
+                location_parts.append(f"第{target_chapter.chapter_number}章")
+            if target_section:
+                location_parts.append(f"第{target_section.section_number}节")
+            location_str = " ".join(location_parts) if location_parts else ""
+            section_title = target_section.title if target_section else target_lesson.title
+            return json.dumps({
+                "success": False,
+                "error": f"{location_str}「{section_title}」还没有生成课件内容，请先在学习计划页面生成课件",
+                "section_id": target_section.id if target_section else None,
+                "chapter_number": target_chapter.chapter_number if target_chapter else None,
+                "section_number": target_section.section_number if target_section else None,
+                "section_title": section_title,
+                "hint": "提示用户前往学习计划页面生成课件后再来学习"
             }, ensure_ascii=False)
         
         # ========== 6. 构建返回数据 ==========

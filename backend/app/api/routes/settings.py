@@ -1,383 +1,247 @@
 """
-设置 API 路由 - 管理用户和系统设置
+设置 API 路由 - 管理多模型API配置和模块-模型映射
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
-import os
 
 from app.schemas import Response
+from app.core.model_config import (
+    load_model_config,
+    save_model_config,
+    clear_config_cache,
+    MODULE_DEFINITIONS,
+    get_tts_model_config,
+)
+from app.services.tts_provider import (
+    TTS_PROVIDER_DEFINITIONS,
+    TTS_VOICES,
+    create_tts_provider,
+    reset_tts_provider_cache,
+)
 
 
 router = APIRouter()
 
 
-class SettingsResponse(BaseModel):
-    """设置响应模型"""
-    tavily_api_key: Optional[str] = ""
-    tavily_configured: bool = False
-    # 当前选中的提供商
-    current_provider: str = "ollama"  # ollama, custom
-    # Ollama 配置
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3.5:9B"
-    # 自定义 API 配置
-    custom_api_key: Optional[str] = ""
-    custom_api_base_url: str = "https://api.openai.com/v1"
-    custom_model: str = "gpt-3.5-turbo"
-    custom_supports_thinking: bool = False
-    # 默认联网模式
-    default_web_search: str = "off"
+# ========== 请求/响应模型 ==========
 
-
-class ModelPreset(BaseModel):
-    """模型预设"""
-    name: str
-    base_url: str
-    model: str
-    api_key_required: bool = True
+class ModelApiItem(BaseModel):
+    """单个模型API配置"""
+    id: Optional[str] = None  # 新增时为None，由后端生成
+    name: str = ""
+    type: str = "ollama"  # ollama / custom
+    base_url: str = ""
+    model: str = ""
+    api_key: Optional[str] = ""
     supports_thinking: bool = False
+    supports_vision: bool = False
+    supports_video: bool = False
+    supports_audio: bool = False
 
 
-# 内置模型预设
-BUILTIN_PRESETS: List[Dict[str, Any]] = [
-    {
-        "id": "ollama-local",
-        "name": "Ollama 本地模型",
-        "base_url": "http://localhost:11434",
-        "model": "qwen3.5:9B",
-        "api_key_required": False,
-        "supports_thinking": True,
-        "description": "本地部署的 Ollama 模型"
-    },
-    {
-        "id": "qwen-dashscope",
-        "name": "通义千问 (DashScope)",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "qwen3.5-Plus",
-        "api_key_required": True,
-        "supports_thinking": False,
-        "description": "阿里云通义千问 Plus"
-    },
-    {
-        "id": "deepseek",
-        "name": "DeepSeek",
-        "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
-        "api_key_required": True,
-        "supports_thinking": False,
-        "description": "DeepSeek V3 模型"
-    },
-    {
-        "id": "kimi",
-        "name": "Kimi (月之暗面)",
-        "base_url": "https://api.moonshot.cn/v1",
-        "model": "Kimi-K2.5",
-        "api_key_required": True,
-        "supports_thinking": False,
-        "description": "月之暗面 Kimi 模型"
-    },
-    {
-        "id": "minimax",
-        "name": "MiniMax",
-        "base_url": "https://api.minimax.chat/v1",
-        "model": "MiniMax-M2.7",
-        "api_key_required": True,
-        "supports_thinking": False,
-        "description": "MiniMax 海螺 AI 模型"
-    },
-    {
-        "id": "zhipu",
-        "name": "智谱 AI",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "model": "GLM-5",
-        "api_key_required": True,
-        "supports_thinking": False,
-        "description": "智谱 GLM-4 模型"
-    },
-    {
-        "id": "openai",
-        "name": "OpenAI",
-        "base_url": "https://api.openai.com/v1",
-        "model": "GPT-5.4",
-        "api_key_required": True,
-        "supports_thinking": False,
-        "description": "OpenAI GPT-4o Mini"
-    },
-    {
-        "id": "custom",
-        "name": "自定义配置",
-        "base_url": "",
-        "model": "",
-        "api_key_required": True,
-        "supports_thinking": False,
-        "description": "手动配置 API 端点和模型"
-    }
-]
+class TtsApiItem(BaseModel):
+    """单个TTS API配置"""
+    id: Optional[str] = None
+    name: str = ""
+    provider: str = "dashscope"  # dashscope / openai / edge
+    base_url: str = ""
+    model: str = ""
+    api_key: Optional[str] = ""
+    voice: str = ""
 
 
-class SettingsUpdateRequest(BaseModel):
-    """设置更新请求"""
+class ModelConfigRequest(BaseModel):
+    """保存模型配置请求"""
+    model_apis: List[ModelApiItem] = []
+    module_models: Dict[str, str] = {}  # module_id -> model_api_id
     tavily_api_key: Optional[str] = None
-    # 当前选中的提供商
-    current_provider: Optional[str] = None  # ollama, custom
-    # Ollama 配置
-    ollama_base_url: Optional[str] = None
-    ollama_model: Optional[str] = None
-    # 自定义 API 配置
-    custom_api_key: Optional[str] = None
-    custom_api_base_url: Optional[str] = None
-    custom_model: Optional[str] = None
-    custom_supports_thinking: Optional[bool] = None
-    default_web_search: Optional[str] = None
+    dashscope_api_key: Optional[str] = None
+    tts_apis: List[TtsApiItem] = []
+    tts_model: Optional[str] = None  # 选中的TTS API ID
 
 
-@router.get("/current", response_model=Response)
-async def get_settings():
+# ========== API 接口 ==========
+
+@router.get("/model-config", response_model=Response)
+async def get_model_config():
     """
-    获取当前设置
+    获取完整的模型配置
+    包括：模型API列表、模块-模型映射、Tavily/DashScope Key、模块定义
     """
-    # 从环境变量和配置文件读取设置
-    tavily_key = os.getenv("TAVILY_API_KEY", "")
-    tavily_configured = bool(tavily_key and len(tavily_key) > 0)
-    
-    # 隐藏 API Key 的实际值
-    masked_tavily_key = ""
+    config = load_model_config()
+
+    # 对 API Key 进行掩码处理
+    masked_apis = []
+    for api in config.get("model_apis", []):
+        masked_api = {**api}
+        if masked_api.get("api_key") and len(masked_api["api_key"]) > 8:
+            key = masked_api["api_key"]
+            masked_api["api_key"] = key[:4] + "****" + key[-4:]
+            masked_api["api_key_configured"] = True
+        elif masked_api.get("api_key"):
+            masked_api["api_key_configured"] = True
+        else:
+            masked_api["api_key_configured"] = False
+        masked_apis.append(masked_api)
+
+    # Tavily Key 掩码
+    tavily_key = config.get("tavily_api_key", "")
+    tavily_configured = bool(tavily_key)
+    masked_tavily = ""
     if tavily_key:
         if len(tavily_key) > 8:
-            masked_tavily_key = tavily_key[:4] + "****" + tavily_key[-4:]
+            masked_tavily = tavily_key[:4] + "****" + tavily_key[-4:]
         else:
-            masked_tavily_key = "****"
-    
-    # 从 .env 文件读取配置
-    current_provider = os.getenv("CURRENT_PROVIDER", "ollama")
-    ollama_base_url = "http://localhost:11434"
-    ollama_model = "qwen3.5:9B"
-    custom_api_key = os.getenv("CUSTOM_API_KEY", "")
-    custom_api_base_url = os.getenv("CUSTOM_API_BASE_URL", "https://api.openai.com/v1")
-    custom_model = os.getenv("CUSTOM_MODEL", "gpt-4o-mini")
-    custom_supports_thinking = os.getenv("CUSTOM_SUPPORTS_THINKING", "false").lower() == "true"
-    
-    try:
-        env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env")
-        if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        if "=" in line:
-                            key, value = line.split("=", 1)
-                            key = key.strip()
-                            value = value.strip()
-                            if key == "CURRENT_PROVIDER":
-                                current_provider = value
-                            elif key == "OLLAMA_BASE_URL":
-                                ollama_base_url = value
-                            elif key == "OLLAMA_MODEL":
-                                ollama_model = value
-                            elif key == "CUSTOM_API_KEY":
-                                custom_api_key = value
-                            elif key == "CUSTOM_API_BASE_URL":
-                                custom_api_base_url = value
-                            elif key == "CUSTOM_MODEL":
-                                custom_model = value
-                            elif key == "CUSTOM_SUPPORTS_THINKING":
-                                custom_supports_thinking = value.lower() == "true"
-                            elif key == "TAVILY_API_KEY":
-                                tavily_key = value
-                            elif key == "CURRENT_PROVIDER":
-                                current_provider = value
-    except Exception as e:
-        print(f"读取 .env 文件出错: {e}")
-    
-    # 重新检查 tavily 配置状态
-    tavily_configured = bool(tavily_key and len(tavily_key) > 0)
-    
-    # 隐藏自定义 API Key（但保持可检测性）
-    # 如果 custom_api_key 有值，返回空字符串表示已配置（前端可通过此判断是否配置）
-    # 如果 custom_api_key 为空，返回 None 表示未配置
-    custom_api_key_configured = bool(custom_api_key and len(custom_api_key) > 0)
-    custom_api_key_response = "" if custom_api_key_configured else None
-    
+            masked_tavily = "****"
+
+    # DashScope Key 掩码
+    dashscope_key = config.get("dashscope_api_key", "")
+    dashscope_configured = bool(dashscope_key)
+    masked_dashscope = ""
+    if dashscope_key:
+        if len(dashscope_key) > 8:
+            masked_dashscope = dashscope_key[:4] + "****" + dashscope_key[-4:]
+        else:
+            masked_dashscope = "****"
+
+    # TTS APIs 掩码
+    masked_tts_apis = []
+    for api in config.get("tts_apis", []):
+        masked_api = {**api}
+        if masked_api.get("api_key") and len(masked_api["api_key"]) > 8:
+            key = masked_api["api_key"]
+            masked_api["api_key"] = key[:4] + "****" + key[-4:]
+            masked_api["api_key_configured"] = True
+        elif masked_api.get("api_key"):
+            masked_api["api_key_configured"] = True
+        else:
+            masked_api["api_key_configured"] = False
+        masked_tts_apis.append(masked_api)
+
     return Response(
         success=True,
-        message="获取设置成功",
+        message="获取配置成功",
         data={
-            "tavily_api_key": masked_tavily_key,
+            "model_apis": masked_apis,
+            "module_models": config.get("module_models", {}),
+            "module_definitions": MODULE_DEFINITIONS,
+            "tavily_api_key": masked_tavily,
             "tavily_configured": tavily_configured,
-            "current_provider": current_provider,
-            "ollama_base_url": ollama_base_url,
-            "ollama_model": ollama_model,
-            "custom_api_key": custom_api_key_response,  # 空字符串表示已配置，None表示未配置
-            "custom_api_base_url": custom_api_base_url,
-            "custom_model": custom_model,
-            "custom_supports_thinking": custom_supports_thinking,
-            "default_web_search": "off",
-            "presets": BUILTIN_PRESETS
+            "dashscope_api_key": masked_dashscope,
+            "dashscope_configured": dashscope_configured,
+            "tts_apis": masked_tts_apis,
+            "tts_model": config.get("tts_model", ""),
+            "tts_provider_definitions": TTS_PROVIDER_DEFINITIONS,
+            "tts_voices": TTS_VOICES,
         }
     )
 
 
-@router.post("/update", response_model=Response)
-async def update_settings(request: SettingsUpdateRequest):
+@router.post("/model-config", response_model=Response)
+async def update_model_config(request: ModelConfigRequest):
     """
-    更新设置
+    保存完整的模型配置
     """
+    import uuid
+
     try:
-        # 获取 .env 文件路径（settings.py 在 app/api/routes/ 下）
-        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        env_path = os.path.join(backend_dir, ".env")
-        
-        # 更新配置（如果值包含掩码标记则不更新）
-        def is_masked(value: str) -> bool:
-            """检查值是否为掩码格式"""
-            return value and '****' in value
-        
-        # 读取并更新 .env 文件，保留原有格式和注释
-        if os.path.exists(env_path):
-            try:
-                with open(env_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-            except Exception as e:
-                print(f"读取 .env 文件出错: {e}")
-                lines = []
-        else:
-            lines = []
-        
-        # 需要更新的配置映射
-        updates = {}
-        if request.tavily_api_key and not is_masked(request.tavily_api_key):
-            updates["TAVILY_API_KEY"] = request.tavily_api_key
-        if request.current_provider is not None:
-            updates["CURRENT_PROVIDER"] = request.current_provider
-        if request.ollama_base_url is not None:
-            updates["OLLAMA_BASE_URL"] = request.ollama_base_url
-        if request.ollama_model is not None:
-            updates["OLLAMA_MODEL"] = request.ollama_model
-        if request.custom_api_key and not is_masked(request.custom_api_key):
-            updates["CUSTOM_API_KEY"] = request.custom_api_key
-        if request.custom_api_base_url is not None:
-            updates["CUSTOM_API_BASE_URL"] = request.custom_api_base_url
-        if request.custom_model is not None:
-            updates["CUSTOM_MODEL"] = request.custom_model
-        if request.custom_supports_thinking is not None:
-            updates["CUSTOM_SUPPORTS_THINKING"] = str(request.custom_supports_thinking).lower()
-        
-        # 逐行处理文件
-        updated_keys = set()
-        new_lines = []
-        for line in lines:
-            stripped = line.strip()
-            if "=" in stripped and not stripped.startswith("#"):
-                key = stripped.split("=", 1)[0].strip()
-                if key in updates:
-                    new_lines.append(f"{key}={updates[key]}\n")
-                    updated_keys.add(key)
+        # 读取当前配置（获取未掩码的 API Key）
+        current_config = load_model_config()
+        current_apis_map = {api["id"]: api for api in current_config.get("model_apis", [])}
+
+        # 处理模型API列表 - 保留未修改的API Key
+        processed_apis = []
+        for item in request.model_apis:
+            api_dict = item.model_dump()
+
+            # 如果是新增模型，生成ID
+            if not api_dict.get("id"):
+                api_dict["id"] = f"model_{uuid.uuid4().hex[:8]}"
+
+            # 处理 API Key 掩码：如果包含 ****，说明用户未修改，保留原值
+            api_key = api_dict.get("api_key", "")
+            if "****" in api_key or api_key == "":
+                # 保留原配置中的 key
+                old_api = current_apis_map.get(api_dict["id"])
+                if old_api and old_api.get("api_key"):
+                    api_dict["api_key"] = old_api["api_key"]
                 else:
-                    new_lines.append(line)
-            else:
-                new_lines.append(line)
-        
-        # 添加新的配置项（如果不存在）
-        for key, value in updates.items():
-            if key not in updated_keys:
-                new_lines.append(f"{key}={value}\n")
-        
-        # 写入配置文件
-        try:
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-        except Exception as e:
-            return Response(
-                success=False,
-                message=f"保存配置失败: {str(e)}",
-                data=None
-            )
-        
-        # 同步更新 settings 对象的属性，确保运行时读取最新配置
-        try:
-            from app.core.config import settings
-            if "TAVILY_API_KEY" in updates:
-                settings.TAVILY_API_KEY = updates["TAVILY_API_KEY"]
-            if "CURRENT_PROVIDER" in updates:
-                settings.CURRENT_PROVIDER = updates["CURRENT_PROVIDER"]
-            if "OLLAMA_BASE_URL" in updates:
-                settings.OLLAMA_BASE_URL = updates["OLLAMA_BASE_URL"]
-            if "OLLAMA_MODEL" in updates:
-                settings.OLLAMA_MODEL = updates["OLLAMA_MODEL"]
-            if "CUSTOM_API_KEY" in updates:
-                settings.CUSTOM_API_KEY = updates["CUSTOM_API_KEY"]
-            if "CUSTOM_API_BASE_URL" in updates:
-                settings.CUSTOM_API_BASE_URL = updates["CUSTOM_API_BASE_URL"]
-            if "CUSTOM_MODEL" in updates:
-                settings.CUSTOM_MODEL = updates["CUSTOM_MODEL"]
-            if "CUSTOM_SUPPORTS_THINKING" in updates:
-                settings.CUSTOM_SUPPORTS_THINKING = updates["CUSTOM_SUPPORTS_THINKING"] == "true"
-        except Exception as e:
-            print(f"同步 settings 对象失败: {e}")
-        
-        # 重置 Tavily 服务实例以应用新配置
-        from app.services.tavily_service import reset_tavily_service
-        reset_tavily_service()
-        
-        # 重置 AI Provider 缓存以应用新配置
+                    api_dict["api_key"] = ""
+
+            processed_apis.append(api_dict)
+
+        # 处理 TTS APIs 列表 - 保留未修改的 API Key
+        current_tts_map = {api["id"]: api for api in current_config.get("tts_apis", [])}
+        processed_tts_apis = []
+        for item in request.tts_apis:
+            tts_dict = item.model_dump()
+
+            # 如果是新增，生成ID
+            if not tts_dict.get("id"):
+                tts_dict["id"] = f"tts_{uuid.uuid4().hex[:8]}"
+
+            # 处理 API Key 掩码
+            api_key = tts_dict.get("api_key", "")
+            if "****" in api_key or api_key == "":
+                old_tts = current_tts_map.get(tts_dict["id"])
+                if old_tts and old_tts.get("api_key"):
+                    tts_dict["api_key"] = old_tts["api_key"]
+                else:
+                    tts_dict["api_key"] = ""
+
+            processed_tts_apis.append(tts_dict)
+
+        # 构建新配置
+        new_config = {
+            "model_apis": processed_apis,
+            "module_models": request.module_models,
+            "tavily_api_key": current_config.get("tavily_api_key", ""),
+            "dashscope_api_key": current_config.get("dashscope_api_key", ""),
+            "tts_apis": processed_tts_apis,
+            "tts_model": request.tts_model if request.tts_model is not None else current_config.get("tts_model", ""),
+        }
+
+        # 处理 Tavily Key
+        if request.tavily_api_key is not None and "****" not in request.tavily_api_key:
+            new_config["tavily_api_key"] = request.tavily_api_key
+
+        # 处理 DashScope Key
+        if request.dashscope_api_key is not None and "****" not in request.dashscope_api_key:
+            new_config["dashscope_api_key"] = request.dashscope_api_key
+
+        # 保存配置
+        save_model_config(new_config)
+
+        # 同步更新 .env 文件中的相关配置（保持兼容性）
+        _sync_to_env(new_config)
+
+        # 重置缓存
+        clear_config_cache()
         from app.services.engine_manager import reset_ai_provider_cache
         reset_ai_provider_cache()
-        
+
+        # 重置 TTS 服务
+        reset_tts_provider_cache()
+
+        # 重置 Tavily 服务
+        try:
+            from app.services.tavily_service import reset_tavily_service
+            reset_tavily_service()
+        except Exception:
+            pass
+
         return Response(
             success=True,
-            message="设置已保存并生效",
+            message="配置已保存并生效",
             data={"saved": True}
         )
-        
+
     except Exception as e:
         return Response(
             success=False,
-            message=f"更新设置失败: {str(e)}",
+            message=f"保存配置失败: {str(e)}",
             data=None
-        )
-
-
-@router.post("/test-tavily", response_model=Response)
-async def test_tavily_connection(api_key: str):
-    """
-    测试 Tavily API 连接
-    """
-    from app.services.tavily_service import TavilySearchService
-    
-    try:
-        tavily = TavilySearchService(api_key=api_key)
-        
-        # 执行一个简单的测试搜索
-        result = await tavily.search(
-            query="test",
-            max_results=1
-        )
-        
-        if result and result.get("results"):
-            return Response(
-                success=True,
-                message="Tavily API 连接成功",
-                data={"connected": True}
-            )
-        else:
-            return Response(
-                success=False,
-                message="Tavily API 返回数据异常",
-                data={"connected": False}
-            )
-            
-    except ValueError as e:
-        return Response(
-            success=False,
-            message=str(e),
-            data={"connected": False}
-        )
-    except Exception as e:
-        return Response(
-            success=False,
-            message=f"连接失败: {str(e)}",
-            data={"connected": False}
         )
 
 
@@ -392,7 +256,7 @@ async def test_model_connection(
     测试模型 API 连接
     """
     from app.services.ai_model_provider import CustomProvider, OllamaProvider
-    
+
     try:
         if provider == "ollama":
             test_provider = OllamaProvider(
@@ -405,14 +269,14 @@ async def test_model_connection(
                 base_url=base_url,
                 model=model
             )
-        
+
         # 发送测试消息
         test_messages = [
             {"role": "user", "content": "你好，请回复 OK"}
         ]
-        
+
         response = await test_provider.chat(test_messages)
-        
+
         if response and len(response) > 0:
             return Response(
                 success=True,
@@ -425,7 +289,7 @@ async def test_model_connection(
                 message="模型返回为空",
                 data={"connected": False}
             )
-            
+
     except Exception as e:
         return Response(
             success=False,
@@ -434,13 +298,194 @@ async def test_model_connection(
         )
 
 
-@router.get("/presets", response_model=Response)
-async def get_model_presets():
+@router.post("/test-tavily", response_model=Response)
+async def test_tavily_connection(api_key: str):
     """
-    获取内置模型预设
+    测试 Tavily API 连接
     """
-    return Response(
-        success=True,
-        message="获取成功",
-        data={"presets": BUILTIN_PRESETS}
-    )
+    from app.services.tavily_service import TavilySearchService
+
+    try:
+        tavily = TavilySearchService(api_key=api_key)
+
+        # 执行一个简单的测试搜索
+        result = await tavily.search(
+            query="test",
+            max_results=1
+        )
+
+        if result and result.get("results"):
+            return Response(
+                success=True,
+                message="Tavily API 连接成功",
+                data={"connected": True}
+            )
+        else:
+            return Response(
+                success=False,
+                message="Tavily API 返回数据异常",
+                data={"connected": False}
+            )
+
+    except ValueError as e:
+        return Response(
+            success=False,
+            message=str(e),
+            data={"connected": False}
+        )
+    except Exception as e:
+        return Response(
+            success=False,
+            message=f"连接失败: {str(e)}",
+            data={"connected": False}
+        )
+
+
+@router.post("/test-tts", response_model=Response)
+async def test_tts_connection(
+    provider: str = "dashscope",
+    api_key: str = "",
+    base_url: str = "",
+    model: str = "",
+    voice: str = "",
+):
+    """
+    测试 TTS 服务连接
+    """
+    try:
+        tts_provider = create_tts_provider(
+            provider_type=provider,
+            config={
+                "api_key": api_key,
+                "base_url": base_url,
+                "model": model,
+                "voice": voice,
+            }
+        )
+
+        # 健康检查
+        health = await tts_provider.health_check()
+        if not health.get("available"):
+            return Response(
+                success=False,
+                message=f"TTS 服务不可用: {health.get('reason', '未知原因')}",
+                data={"connected": False}
+            )
+
+        # 尝试合成一段测试文本
+        result = await tts_provider.synthesize("你好，这是一个语音合成测试。")
+        if result.get("success"):
+            return Response(
+                success=True,
+                message=f"TTS 服务连接成功！(提供商: {provider}, 音色: {voice or '默认'})",
+                data={"connected": True, "provider": provider}
+            )
+        else:
+            return Response(
+                success=False,
+                message=f"TTS 合成测试失败: {result.get('error', '未知错误')}",
+                data={"connected": False}
+            )
+
+    except Exception as e:
+        return Response(
+            success=False,
+            message=f"TTS 连接失败: {str(e)}",
+            data={"connected": False}
+        )
+
+
+# ========== 内部辅助函数 ==========
+
+def _sync_to_env(config: Dict[str, Any]):
+    """
+    将关键配置同步写入 .env 文件（保持兼容性）
+    """
+    import os
+
+    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env")
+
+    # 构建 .env 更新映射
+    updates = {}
+
+    # 同步 Tavily Key
+    tavily_key = config.get("tavily_api_key", "")
+    if tavily_key:
+        updates["TAVILY_API_KEY"] = tavily_key
+
+    # 同步 DashScope Key (从 tts_apis 中提取)
+    dashscope_key = config.get("dashscope_api_key", "")
+    # 也从 tts_apis 中查找 dashscope 提供商的 key
+    for tts_api in config.get("tts_apis", []):
+        if tts_api.get("provider") == "dashscope" and tts_api.get("api_key"):
+            dashscope_key = tts_api["api_key"]
+            break
+    if dashscope_key:
+        updates["DASHSCOPE_API_KEY"] = dashscope_key
+
+    # 同步当前默认 Provider（使用 agent 模块的模型）
+    module_models = config.get("module_models", {})
+    model_apis = {api["id"]: api for api in config.get("model_apis", [])}
+
+    agent_model_id = module_models.get("agent", "")
+    if agent_model_id and agent_model_id in model_apis:
+        agent_api = model_apis[agent_model_id]
+        if agent_api["type"] == "ollama":
+            updates["CURRENT_PROVIDER"] = "ollama"
+            updates["OLLAMA_BASE_URL"] = agent_api.get("base_url", "http://localhost:11434")
+            updates["OLLAMA_MODEL"] = agent_api.get("model", "qwen3.5:9B")
+        else:
+            updates["CURRENT_PROVIDER"] = "custom"
+            updates["CUSTOM_API_BASE_URL"] = agent_api.get("base_url", "")
+            updates["CUSTOM_MODEL"] = agent_api.get("model", "")
+            updates["CUSTOM_SUPPORTS_THINKING"] = str(agent_api.get("supports_thinking", False)).lower()
+            if agent_api.get("api_key"):
+                updates["CUSTOM_API_KEY"] = agent_api["api_key"]
+
+    if not updates:
+        return
+
+    # 读取并更新 .env 文件
+    try:
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        else:
+            lines = []
+
+        updated_keys = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if "=" in stripped and not stripped.startswith("#"):
+                key = stripped.split("=", 1)[0].strip()
+                if key in updates:
+                    new_lines.append(f"{key}={updates[key]}\n")
+                    updated_keys.add(key)
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+
+        # 添加新的配置项
+        for key, value in updates.items():
+            if key not in updated_keys:
+                new_lines.append(f"{key}={value}\n")
+
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+
+        # 同步运行时 settings 对象
+        try:
+            from app.core.config import settings as app_settings
+            for key, value in updates.items():
+                if hasattr(app_settings, key):
+                    if key == "CUSTOM_SUPPORTS_THINKING":
+                        setattr(app_settings, key, value.lower() == "true")
+                    else:
+                        setattr(app_settings, key, value)
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"[Settings] 同步 .env 文件出错: {e}")

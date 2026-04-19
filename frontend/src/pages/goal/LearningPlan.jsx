@@ -90,6 +90,22 @@ function LearningPlan() {
   })
   const [showTTSProgressModal, setShowTTSProgressModal] = useState(false) // TTS进度弹窗显示状态
   const ttsCancelledRef = useRef(false) // TTS合成取消标志（使用ref确保闭包内可访问）
+  // 章节TTS进度状态
+  const [chapterTtsProgressInfo, setChapterTtsProgressInfo] = useState({
+    chapterId: null,
+    chapterTitle: '',
+    totalSections: 0,
+    currentSection: 0,
+    currentSectionTitle: '',
+    status: 'idle', // idle | preparing | generating | completed | error
+    message: '准备开始...',
+    synthesizedCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+    results: [] // 记录每个小节的合成结果
+  })
+  const [showChapterTTSProgressModal, setShowChapterTTSProgressModal] = useState(false) // 章节TTS进度弹窗
+  const chapterTtsCancelledRef = useRef(false) // 章节TTS取消标志
   const [showResetModal, setShowResetModal] = useState(false) // 重置进度确认弹窗
 
   useEffect(() => { fetchData() }, [goalId])
@@ -1041,6 +1057,108 @@ function LearningPlan() {
     }
   }
 
+  // 一键合成章节所有小节的PPT语音
+  const handleSynthesizeChapterAudio = async (chapterId, chapterTitle, sections) => {
+    // 统计已生成PPT的小节数量
+    const sectionsWithPpt = sections.filter(s => s.ppt_generated)
+    if (sectionsWithPpt.length === 0) {
+      message.warning('该章节下没有已生成PPT的小节，请先生成PPT')
+      return
+    }
+    
+    // 初始化进度状态
+    chapterTtsCancelledRef.current = false
+    setChapterTtsProgressInfo({
+      chapterId,
+      chapterTitle,
+      totalSections: sectionsWithPpt.length,
+      currentSection: 0,
+      currentSectionTitle: '',
+      status: 'preparing',
+      message: `准备为${sectionsWithPpt.length}个小节合成音频...`,
+      synthesizedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      results: []
+    })
+    setShowChapterTTSProgressModal(true)
+
+    try {
+      await ttsAPI.synthesizeChapterAudio(chapterId, null, (data) => {
+        // 如果已取消，忽略后续事件
+        if (chapterTtsCancelledRef.current) return
+        
+        setChapterTtsProgressInfo(prev => {
+          const newProgress = { ...prev }
+          
+          if (data.type === 'start') {
+            newProgress.status = 'generating'
+            newProgress.totalSections = data.total_sections
+            newProgress.message = data.message
+          } else if (data.type === 'section_start') {
+            newProgress.currentSection = data.current_section
+            newProgress.currentSectionTitle = data.current_section_title
+            newProgress.message = data.message
+          } else if (data.type === 'section_complete') {
+            // 添加小节结果
+            const sectionResult = {
+              sectionId: sectionsWithPpt[data.current_section - 1]?.id,
+              sectionTitle: data.current_section_title,
+              status: data.section_status,
+              synthesizedCount: data.synthesized_count,
+              skippedCount: data.skipped_count,
+              failedCount: data.failed_count
+            }
+            newProgress.results = [...newProgress.results, sectionResult]
+            newProgress.synthesizedCount += data.synthesized_count
+            newProgress.skippedCount += data.skipped_count
+            newProgress.failedCount += data.failed_count
+            newProgress.message = data.message
+          } else if (data.type === 'complete') {
+            newProgress.status = 'completed'
+            newProgress.message = data.message
+          } else if (data.type === 'error') {
+            newProgress.status = 'error'
+            newProgress.message = data.message
+          }
+          
+          return newProgress
+        })
+      })
+
+      // 关闭进度弹窗
+      setShowChapterTTSProgressModal(false)
+
+      // 如果已取消，不显示成功提示
+      if (chapterTtsCancelledRef.current) {
+        return
+      }
+
+      // 刷新数据
+      await fetchData()
+
+      // 显示完成提示
+      const info = chapterTtsProgressInfo
+      if (info.failedCount === 0) {
+        message.success(`章节音频合成完成！成功合成${info.synthesizedCount}页`, 2)
+      } else {
+        message.warning(`章节音频合成完成！成功${info.synthesizedCount}页，失败${info.failedCount}页`, 3)
+      }
+    } catch (error) {
+      setShowChapterTTSProgressModal(false)
+      
+      // 如果是取消导致的错误，忽略
+      if (chapterTtsCancelledRef.current) {
+        return
+      }
+      
+      console.error('章节语音合成失败:', error)
+      message.error({ 
+        content: '章节语音合成失败: ' + error.message 
+      })
+    }
+  }
+
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', gap: 16 }}>
@@ -1137,6 +1255,22 @@ function LearningPlan() {
                     >
                       {isChapterGenerating ? '生成中...' : `为${chapter.sections?.length || 0}个小节生成PPT`}
                     </Button>
+                    {/* 一键合成章节音频按钮 - 仅当有已生成PPT的小节时显示 */}
+                    {chapter.sections?.some(s => s.ppt_generated) && (
+                      <Button
+                        size="small"
+                        icon={<SoundOutlined />}
+                        onClick={() => handleSynthesizeChapterAudio(chapter.id, chapter.title, chapter.sections)}
+                        style={{
+                          borderRadius: 8,
+                          background: checkChapterAllHasAudio(chapter) ? '#f6ffed' : '#e6f7ff',
+                          borderColor: checkChapterAllHasAudio(chapter) ? '#52c41a' : '#1890ff',
+                          color: checkChapterAllHasAudio(chapter) ? '#52c41a' : '#1890ff'
+                        }}
+                      >
+                        {checkChapterAllHasAudio(chapter) ? '已合成' : '合成音频'}
+                      </Button>
+                    )}
                   </div>
                 </div>
                 {/* 学习目标 */}
@@ -1984,6 +2118,219 @@ function LearningPlan() {
     )
   }
 
+  // 章节TTS进度弹窗
+  const renderChapterTTSProgressModal = () => {
+    const { chapterTitle, totalSections, currentSection, currentSectionTitle, status, message, synthesizedCount, skippedCount, failedCount, results } = chapterTtsProgressInfo
+    const isCompleted = status === 'completed'
+    const isError = status === 'error'
+    const isGenerating = status === 'generating' || status === 'preparing'
+    const progress = totalSections > 0 ? Math.round((results.length / totalSections) * 100) : 0
+    
+    return (
+      <Modal
+        title={null}
+        open={showChapterTTSProgressModal}
+        closable={isCompleted || isError}
+        onCancel={() => (isCompleted || isError) ? setShowChapterTTSProgressModal(false) : null}
+        footer={
+          isCompleted ? [
+            <Button key="close" type="primary" onClick={() => setShowChapterTTSProgressModal(false)}
+              style={{ 
+                borderRadius: 10,
+                height: 44,
+                paddingLeft: 32,
+                paddingRight: 32,
+                background: 'linear-gradient(135deg,#10b981,#06b6d4)',
+                border: 'none',
+                fontWeight: 600,
+                fontSize: 15
+              }}
+            >
+              完成
+            </Button>
+          ] : isError ? [
+            <Button key="close" type="primary" onClick={() => setShowChapterTTSProgressModal(false)} style={{ borderRadius: 10, height: 40 }}>
+              关闭
+            </Button>
+          ] : null
+        }
+        maskClosable={false}
+        width={520}
+        styles={{ body: { padding: '28px' } }}
+      >
+        {/* 顶部图标 */}
+        <div style={{ textAlign: 'center', marginBottom: 20 }}>
+          {isCompleted ? (
+            <div style={{
+              width: 72,
+              height: 72,
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, #10b981, #06b6d4)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px',
+              boxShadow: '0 6px 24px rgba(16, 185, 129, 0.4)',
+              animation: 'pulse 0.5s ease-out'
+            }}>
+              <CheckCircleOutlined style={{ fontSize: 36, color: '#fff' }} />
+            </div>
+          ) : isError ? (
+            <div style={{
+              width: 72,
+              height: 72,
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, #ff4d4f, #ff7875)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px',
+              boxShadow: '0 6px 24px rgba(255, 77, 79, 0.4)'
+            }}>
+              <CloseCircleOutlined style={{ fontSize: 36, color: '#fff' }} />
+            </div>
+          ) : (
+            <div style={{
+              width: 72,
+              height: 72,
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, #1890ff, #13c2c2)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px',
+              boxShadow: '0 6px 24px rgba(24, 144, 255, 0.3)',
+              animation: 'spin 2s linear infinite'
+            }}>
+              <LoadingOutlined style={{ fontSize: 36, color: '#fff' }} />
+            </div>
+          )}
+        </div>
+        
+        {/* 标题 */}
+        <div style={{ textAlign: 'center', marginBottom: 16 }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: '#1e293b', marginBottom: 4 }}>
+            {isCompleted ? '章节音频合成完成！' : isError ? '合成失败' : `正在为"${chapterTitle}"合成音频`}
+          </div>
+          <div style={{ fontSize: 13, color: '#64748b' }}>
+            {isCompleted ? message : isError ? '请检查网络或稍后重试' : message || '正在批量合成小节音频...'}
+          </div>
+        </div>
+        
+        {/* 进度条 */}
+        {isGenerating && (
+          <div style={{ marginBottom: 16 }}>
+            <Progress 
+              percent={progress} 
+              status="active"
+              strokeColor={{
+                '0%': '#1890ff',
+                '100%': '#13c2c2',
+              }}
+              trailColor="#e8ecf0"
+              showInfo={true}
+              format={(percent) => `${percent}%`}
+              strokeWidth={8}
+            />
+          </div>
+        )}
+        
+        {/* 小节进度列表 */}
+        <div style={{ maxHeight: 220, overflowY: 'auto', marginTop: 12 }}>
+          {results.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {results.map((result, idx) => (
+                <div key={idx} style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 8,
+                  padding: '8px 12px',
+                  background: result.status === 'completed' ? 'rgba(16, 185, 129, 0.08)' : 
+                             result.status === 'failed' ? 'rgba(255, 77, 79, 0.08)' : 
+                             'rgba(99, 102, 241, 0.08)',
+                  borderRadius: 8,
+                  fontSize: 13
+                }}>
+                  {result.status === 'completed' ? (
+                    <CheckCircleOutlined style={{ color: '#10b981', fontSize: 16 }} />
+                  ) : result.status === 'failed' ? (
+                    <CloseCircleOutlined style={{ color: '#ff4d4f', fontSize: 16 }} />
+                  ) : (
+                    <LoadingOutlined style={{ color: '#6366f1', fontSize: 16 }} />
+                  )}
+                  <span style={{ flex: 1, color: '#374151' }}>{result.sectionTitle}</span>
+                  <span style={{ color: '#64748b', fontSize: 11 }}>
+                    {result.synthesizedCount > 0 ? `成功${result.synthesizedCount}页` : ''}
+                    {result.skippedCount > 0 ? ` 跳过${result.skippedCount}页` : ''}
+                    {result.failedCount > 0 ? ` 失败${result.failedCount}页` : ''}
+                  </span>
+                </div>
+              ))}
+              {/* 显示当前正在处理的小节 */}
+              {currentSection > results.length && currentSectionTitle && (
+                <div style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 8,
+                  padding: '8px 12px',
+                  background: 'rgba(24, 144, 255, 0.08)',
+                  borderRadius: 8,
+                  fontSize: 13
+                }}>
+                  <LoadingOutlined style={{ color: '#1890ff', fontSize: 16 }} />
+                  <span style={{ flex: 1, color: '#374151' }}>{currentSectionTitle}</span>
+                  <span style={{ color: '#1890ff', fontSize: 12 }}>处理中...</span>
+                </div>
+              )}
+            </div>
+          ) : isGenerating ? (
+            <div style={{ textAlign: 'center', padding: 20, color: '#64748b' }}>
+              准备开始为 {totalSections} 个小节合成音频...
+            </div>
+          ) : null}
+        </div>
+        
+        {/* 统计信息 */}
+        {(isCompleted || results.length > 0) && (
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'center', 
+            gap: 24, 
+            marginTop: 16,
+            padding: '12px 16px',
+            background: 'rgba(0,0,0,0.02)',
+            borderRadius: 8
+          }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#10b981' }}>{synthesizedCount}</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>成功</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#94a3b8' }}>{skippedCount}</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>跳过</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#ff4d4f' }}>{failedCount}</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>失败</div>
+            </div>
+          </div>
+        )}
+        
+        <style>{`
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+          @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 0; }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); opacity: 1; }
+          }
+        `}</style>
+      </Modal>
+    )
+  }
+
   // 渲染传统课时视图
   const renderLessonView = () => (
     <div style={{ position: 'relative' }}>
@@ -2389,6 +2736,7 @@ function LearningPlan() {
 
       {/* 批量PPT生成进度弹窗 */}
       {renderBatchPPTProgressModal()}
+{renderChapterTTSProgressModal()}
 
       {/* 生成学习计划方式选择弹窗 */}
       <Modal

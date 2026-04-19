@@ -3,7 +3,8 @@ import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { message, Tooltip } from 'antd'
 import {
   CopyOutlined, CheckOutlined,
-  RobotOutlined, ExpandOutlined, LoadingOutlined
+  RobotOutlined, ExpandOutlined, LoadingOutlined,
+  EditOutlined, SendOutlined, CloseOutlined
 } from '@ant-design/icons'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
@@ -16,7 +17,7 @@ import CanvasPanel from '../components/CanvasPanel'
 import MermaidRenderer from '../components/MermaidRenderer'
 import ChatPPTVisualizer, { InlineMiniCard } from '../components/ChatPPTVisualizer'
 import { InlineExerciseCard } from '../components/ExercisePractice'
-import { studyGoalAPI } from '../utils/api'
+import { studyGoalAPI, ttsAPI } from '../utils/api'
 
 // ── 工具调用卡片组件 ──────────────────────────────────────────────────────────
 function ToolCallCard({ toolCall }) {
@@ -197,6 +198,45 @@ function QuickActionButtons({ onAction, loading }) {
 
 // ── 附件渲染 ──────────────────────────────────────────────────────────────────
 function AttachmentDisplay({ attachments }) {
+  // 管理动态创建的视频 blob URL，确保不泄漏
+  const videoBlobUrlsRef = useRef({})
+
+  useEffect(() => {
+    if (!attachments || attachments.length === 0) return
+
+    // 为没有 preview 但有 file 的视频附件创建 blob URL
+    const newUrls = {}
+    attachments.forEach(att => {
+      if (att.type === 'video' && !att.preview && att.file instanceof File) {
+        // 复用已存在的 URL（同一 id）
+        if (videoBlobUrlsRef.current[att.id]) {
+          newUrls[att.id] = videoBlobUrlsRef.current[att.id]
+        } else {
+          newUrls[att.id] = URL.createObjectURL(att.file)
+        }
+      }
+    })
+
+    // revoke 不再需要的旧 URL
+    Object.keys(videoBlobUrlsRef.current).forEach(id => {
+      if (!newUrls[id]) {
+        URL.revokeObjectURL(videoBlobUrlsRef.current[id])
+      }
+    })
+
+    videoBlobUrlsRef.current = newUrls
+  }, [attachments])
+
+  // 组件卸载时清理所有 blob URL
+  useEffect(() => {
+    return () => {
+      Object.values(videoBlobUrlsRef.current).forEach(url => {
+        URL.revokeObjectURL(url)
+      })
+      videoBlobUrlsRef.current = {}
+    }
+  }, [])
+
   if (!attachments || attachments.length === 0) return null
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
@@ -212,13 +252,57 @@ function AttachmentDisplay({ attachments }) {
           )
         }
         if (att.type === 'video') {
+          const videoSrc = att.preview || videoBlobUrlsRef.current[att.id] || null
           return (
-            <video
-              key={att.id}
-              src={att.preview || URL.createObjectURL(att.file)}
-              controls
-              style={{ maxWidth: 240, borderRadius: 8 }}
-            />
+            <div key={att.id} style={{ position: 'relative' }}>
+              {videoSrc ? (
+                <video
+                  src={videoSrc}
+                  controls
+                  style={{ maxWidth: 240, borderRadius: 8, display: 'block' }}
+                />
+              ) : (
+                <div style={{
+                  maxWidth: 240, borderRadius: 8, display: 'flex',
+                  alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(0,0,0,0.06)', padding: '16px 20px', gap: 6,
+                }}>
+                  <span style={{ fontSize: 18 }}>🎬</span>
+                  <span style={{ fontSize: 12, color: '#64748b' }}>{att.name || '视频文件'}</span>
+                </div>
+              )}
+              {/* 显示视频帧数信息 */}
+              {att.frameCount !== undefined && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: 4,
+                  right: 4,
+                  background: 'rgba(0,0,0,0.7)',
+                  color: '#fff',
+                  fontSize: 11,
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  fontWeight: 500,
+                }}>
+                  {att.frameCount > 0 ? `${att.frameCount}帧` : '处理中...'}
+                </div>
+              )}
+            </div>
+          )
+        }
+        if (att.type === 'audio') {
+          return (
+            <div key={att.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: 'rgba(16,185,129,0.06)', borderRadius: 8, border: '1px solid rgba(16,185,129,0.2)' }}>
+              <span style={{ fontSize: 16 }}>🎵</span>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>{att.name}</div>
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                  {att.size < 1024 * 1024
+                    ? (att.size / 1024).toFixed(1) + ' KB'
+                    : (att.size / (1024 * 1024)).toFixed(1) + ' MB'}
+                </div>
+              </div>
+            </div>
           )
         }
         return (
@@ -469,6 +553,30 @@ function Chat() {
   const [loading, setLoading] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [copiedId, setCopiedId] = useState(null)
+  const [editingMsgId, setEditingMsgId] = useState(null)
+  const [editingContent, setEditingContent] = useState('')
+  
+  // 语音输入状态（用于 Task 5 自动朗读功能）
+  const [isVoiceInput, setIsVoiceInput] = useState(false)
+
+  // 自动朗读状态
+  const [autoReadEnabled, setAutoReadEnabled] = useState(true)
+  const [isPlayingTTS, setIsPlayingTTS] = useState(false)
+  const currentAudioRef = useRef(null)
+  // 使用 ref 跟踪最新状态，避免 SSE 回调中的闭包问题
+  const autoReadEnabledRef = useRef(autoReadEnabled)
+  useEffect(() => {
+    autoReadEnabledRef.current = autoReadEnabled
+  }, [autoReadEnabled])
+
+  // 监听自动朗读开关变化，关闭时立即停止播放
+  useEffect(() => {
+    if (!autoReadEnabled && currentAudioRef.current) {
+      currentAudioRef.current.pause()
+      currentAudioRef.current = null
+      setIsPlayingTTS(false)
+    }
+  }, [autoReadEnabled])
 
   // Canvas 状态
   const [canvasItems, setCanvasItems] = useState([])
@@ -737,10 +845,44 @@ function Chat() {
       })
   }
   
-  // 将附件中的文档（PDF/Word/TXT）转换为对象列表
+  // 将附件中的视频转换为 base64 字符串列表
+  const convertAttachmentsToVideos = (attachments) => {
+    return attachments
+      .filter(att => att.type === 'video' && att.file)
+      .map(att => {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => {
+            const base64 = reader.result.split(',')[1]
+            resolve(base64)
+          }
+          reader.onerror = reject
+          reader.readAsDataURL(att.file)
+        })
+      })
+  }
+  
+  // 将附件中的音频转换为 base64 字符串列表
+  const convertAttachmentsToAudios = (attachments) => {
+    return attachments
+      .filter(att => att.type === 'audio' && att.file)
+      .map(att => {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => {
+            const base64 = reader.result.split(',')[1]
+            resolve(base64)
+          }
+          reader.onerror = reject
+          reader.readAsDataURL(att.file)
+        })
+      })
+  }
+  
+  // 将附件中的文档（PDF/Word/TXT，不含视频和音频）转换为对象列表
   const convertAttachmentsToDocuments = (attachments) => {
     return attachments
-      .filter(att => att.type !== 'image' && att.file)
+      .filter(att => att.type !== 'image' && att.type !== 'video' && att.type !== 'audio' && att.file)
       .map(att => {
         return new Promise((resolve, reject) => {
           const reader = new FileReader()
@@ -767,7 +909,100 @@ function Chat() {
       })
   }
 
-  const sendMessageDirect = useCallback(async (messageContent, attachments = []) => {
+  // 从视频文件提取关键帧（浏览器原生 Canvas API，无需第三方库）
+  // 从视频文件提取关键帧（1FPS，最多30帧，浏览器原生 Canvas API）
+  const extractVideoFrames = (file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      if (!(file instanceof Blob)) {
+        reject(new Error('无效的视频文件对象'))
+        return
+      }
+      const video = document.createElement('video')
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      const objectURL = URL.createObjectURL(file)
+
+      video.src = objectURL
+      video.muted = true
+      video.preload = 'metadata'
+
+      video.addEventListener('loadedmetadata', async () => {
+        const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 5
+        const maxDim = 640
+        const scaleW = maxDim / (video.videoWidth || maxDim)
+        const scaleH = maxDim / (video.videoHeight || maxDim)
+        const scale = Math.min(1, scaleW, scaleH)
+        canvas.width = Math.round((video.videoWidth || 640) * scale)
+        canvas.height = Math.round((video.videoHeight || 480) * scale)
+
+        // 1FPS，最多30帧
+        const numFrames = Math.min(Math.ceil(duration), 30)
+        const timestamps = numFrames === 1
+          ? [duration * 0.5]
+          : Array.from({ length: numFrames }, (_, i) =>
+              Math.max(0.05, Math.min(duration - 0.05, (duration * i) / (numFrames - 1)))
+            )
+
+        const frames = []
+        let extractionError = null
+        
+        for (let i = 0; i < timestamps.length; i++) {
+          const ts = timestamps[i]
+          try {
+            await new Promise((res, rej) => {
+              const timeoutId = setTimeout(() => {
+                video.removeEventListener('seeked', onSeeked)
+                rej(new Error('帧提取超时'))
+              }, 5000) // 5秒超时
+              
+              const onSeeked = () => {
+                video.removeEventListener('seeked', onSeeked)
+                clearTimeout(timeoutId)
+                try {
+                  ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+                  const b64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1]
+                  if (b64) frames.push(b64)
+                } catch (err) {
+                  console.warn(`[Chat] 提取第 ${i + 1} 帧失败:`, err)
+                }
+                res()
+              }
+              video.addEventListener('seeked', onSeeked)
+              video.currentTime = ts
+            })
+            
+            // 报告进度
+            if (onProgress) {
+              onProgress({ current: i + 1, total: numFrames, phase: 'extracting' })
+            }
+          } catch (err) {
+            console.warn(`[Chat] 第 ${i + 1} 帧提取失败:`, err)
+            extractionError = err
+            // 继续尝试下一帧
+          }
+        }
+        
+        URL.revokeObjectURL(objectURL)
+        
+        // 即使部分帧提取失败，也返回已提取的帧
+        resolve({ 
+          frames, 
+          filename: file.name, 
+          numFrames: frames.length,
+          expectedFrames: numFrames,
+          duration: Math.round(duration),
+          hasError: !!extractionError || frames.length < numFrames
+        })
+      })
+
+      video.addEventListener('error', () => {
+        URL.revokeObjectURL(objectURL)
+        reject(new Error(`视频加载失败: ${file.name}`))
+      })
+    })
+  }
+
+  const sendMessageDirect = useCallback(async (messageContent, attachments = [], overrideHistory = null) => {
     if (isSendingRef.current) return
     isSendingRef.current = true
     isStoppedRef.current = false
@@ -778,6 +1013,7 @@ function Chat() {
       content: messageContent,
       attachments,
       timestamp: new Date(),
+      isProcessingVideo: attachments.some(att => att.type === 'video'), // 标记是否正在处理视频
     }
 
     const aiMessageId = Date.now() + 1
@@ -785,7 +1021,7 @@ function Chat() {
     // 在 setMessages 外计算历史，避免在更新函数内发起请求（React StrictMode 会调两次更新函数）
     // 构建历史消息：携带工具调用信息，后端据此重建OpenAI标准的tool_calls+tool消息序列
     // 重要：当消息有 toolCalls 时，content 应为空，避免模型误以为需要输出类似的引导语
-    const historyForRequest = messagesRef.current.map(m => {
+    const historyForRequest = overrideHistory || messagesRef.current.map(m => {
       const entry = { role: m.role }
       if (m.role === 'assistant' && m.toolCalls?.length > 0) {
         // 有工具调用时，content 为空，只保留 toolCalls
@@ -806,6 +1042,11 @@ function Chat() {
     // 将附件中的图片和文档分别转换
     let images = []
     let documents = []
+    let videos = []
+    let audios = []
+    let videoContextNote = ''
+    let videoProcessingStatus = null // 视频处理状态用于UI反馈
+    
     if (attachments && attachments.length > 0) {
       try {
         const imagePromises = convertAttachmentsToImages(attachments)
@@ -819,6 +1060,119 @@ function Chat() {
       } catch (err) {
         console.error('[Chat] 转换文档失败:', err)
       }
+      
+      // 处理视频：提取帧 + 发送原始视频作为备用
+      try {
+        const videoAttachments = attachments.filter(att => att.type === 'video' && att.file)
+        if (videoAttachments.length > 0) {
+          const videoInfoList = []
+          const videoBase64List = []
+          
+          for (const att of videoAttachments) {
+            // 检查视频大小（50MB限制）
+            const MAX_VIDEO_SIZE = 50 * 1024 * 1024 // 50MB
+            if (att.file.size > MAX_VIDEO_SIZE) {
+              message.warning(`视频「${att.name}」超过50MB，可能影响处理速度`)
+            }
+            
+            // 更新处理状态
+            videoProcessingStatus = { filename: att.name, phase: 'loading', progress: 0 }
+            
+            // 1. 提取关键帧（主方案）
+            let frameResult = null
+            let duration = 0
+            try {
+              frameResult = await extractVideoFrames(att.file, (progress) => {
+                videoProcessingStatus = { 
+                  filename: att.name, 
+                  phase: 'extracting', 
+                  progress: Math.round((progress.current / progress.total) * 100)
+                }
+              })
+              duration = frameResult.duration || 0
+              
+              // 检查视频时长（>60秒提示）
+              if (duration > 60) {
+                message.info(`视频「${att.name}」时长约${duration}秒，将提取前30秒的关键帧进行分析`)
+              }
+              
+              // 如果帧提取有错误但仍有部分帧，给出提示
+              if (frameResult.hasError && frameResult.frames.length > 0) {
+                message.warning(`视频「${att.name}」部分帧提取失败，将使用已提取的${frameResult.frames.length}帧进行分析`)
+              }
+              
+              if (frameResult.frames.length > 0) {
+                images.push(...frameResult.frames)
+                videoInfoList.push({
+                  filename: frameResult.filename,
+                  numFrames: frameResult.frames.length,
+                  duration: frameResult.duration
+                })
+              } else {
+                message.error(`视频「${att.name}」帧提取失败，将尝试使用原始视频分析`)
+              }
+            } catch (frameErr) {
+              console.error('[Chat] 视频帧提取失败:', frameErr)
+              message.error(`视频「${att.name}」帧提取失败: ${frameErr.message}，将尝试使用原始视频分析`)
+            }
+            
+            // 2. 同时读取原始视频为 base64（作为备用方案）
+            try {
+              const videoBase64 = await new Promise((resolve, reject) => {
+                const reader = new FileReader()
+                reader.onload = () => {
+                  const base64 = reader.result.split(',')[1]
+                  resolve(base64)
+                }
+                reader.onerror = reject
+                reader.readAsDataURL(att.file)
+              })
+              videoBase64List.push(videoBase64)
+            } catch (videoErr) {
+              console.error('[Chat] 读取原始视频失败:', videoErr)
+            }
+          }
+          
+          // 构建改进的视频上下文提示
+          if (videoInfoList.length > 0) {
+            const videoDescriptions = videoInfoList.map(v => 
+              `「${v.filename}」（共${v.numFrames}帧，视频时长约${v.duration}秒）`
+            ).join('、')
+            videoContextNote = `[视频分析] 以下图片是从视频 ${videoDescriptions} 中按1秒1帧提取的关键帧，请综合分析视频内容：\n\n`
+          }
+          
+          // 将原始视频 base64 放入 videos 字段
+          if (videoBase64List.length > 0) {
+            videos = videoBase64List
+          }
+          
+          // 更新附件信息，添加帧数（用于UI显示）
+          if (videoInfoList.length > 0) {
+            const frameCountMap = {}
+            videoInfoList.forEach(v => {
+              frameCountMap[v.filename] = v.numFrames
+            })
+            userMessage.attachments = attachments.map(att => {
+              if (att.type === 'video' && frameCountMap[att.name] !== undefined) {
+                return { ...att, frameCount: frameCountMap[att.name] }
+              }
+              return att
+            })
+          }
+          
+          // 清除视频处理标记
+          userMessage.isProcessingVideo = false
+        }
+      } catch (err) {
+        console.error('[Chat] 视频处理失败:', err)
+      }
+      
+      try {
+        const audioPromises = convertAttachmentsToAudios(attachments)
+        audios = await Promise.all(audioPromises)
+      } catch (err) {
+        console.error('[Chat] 转换音频失败:', err)
+      }
     }
 
     // 仅用于更新消息列表状态，不含副作用
@@ -829,10 +1183,12 @@ function Chat() {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({
-        message: messageContent,
+        message: videoContextNote ? videoContextNote + messageContent : messageContent,
         history: historyForRequest,
         images: images.length > 0 ? images : null,
         documents: documents.length > 0 ? documents : null,
+        videos: videos.length > 0 ? videos : null,    // 同时发送原始视频作为备用方案
+        audios: audios.length > 0 ? audios : null,
         goal_id: activeStudyGoalIdRef.current,  // 使用 ref 确保获取最新值
       }),
       signal: abortControllerRef.current.signal,
@@ -994,6 +1350,53 @@ function Chat() {
                   }
                   return msgPrev
                 })
+
+                // ── 自动朗读：开启自动朗读时，所有AI回复完成后自动朗读 ───────────
+                if (autoReadEnabledRef.current) {
+                  const fullResponse = data.full_response || ''
+                  const textToRead = fullResponse
+                    ? stripMarkdown(fullResponse)
+                    : (() => {
+                      // fallback：从消息列表中取最新AI消息
+                      const msgs = messagesRef.current
+                      const lastAi = [...msgs].reverse().find(m => m.role === 'assistant' && m.content)
+                      return lastAi ? stripMarkdown(lastAi.content) : ''
+                    })()
+
+                  if (textToRead) {
+                    ;(async () => {
+                      try {
+                        setIsPlayingTTS(true)
+                        const res = await ttsAPI.synthesizeText(textToRead.slice(0, 5000))
+                        const { success, audio_base64, error } = res.data || {}
+                        if (!success || !audio_base64) {
+                          console.warn('[Chat] TTS合成失败:', error)
+                          setIsPlayingTTS(false)
+                          return
+                        }
+                        // 确定音频格式
+                        const audio = new Audio('data:audio/wav;base64,' + audio_base64)
+                        currentAudioRef.current = audio
+                        audio.onended = () => {
+                          setIsPlayingTTS(false)
+                          currentAudioRef.current = null
+                        }
+                        audio.onerror = () => {
+                          console.warn('[Chat] 音频播放出错')
+                          setIsPlayingTTS(false)
+                          currentAudioRef.current = null
+                        }
+                        await audio.play()
+                      } catch (err) {
+                        console.error('[Chat] 自动朗读失败:', err)
+                        setIsPlayingTTS(false)
+                      }
+                    })()
+                  }
+                  // 朗读结束后重置语音输入标记
+                  setIsVoiceInput(false)
+                }
+
                 return
               }
               if (data.error) throw new Error(data.error)
@@ -1018,11 +1421,97 @@ function Chat() {
     })
   }, [])
 
-  const handleSend = useCallback((text, attachments) => {
+  // ── 停止 TTS 朗读 ──────────────────────────────────────────────────────
+  const stopTTSPlayback = useCallback(() => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause()
+      currentAudioRef.current = null
+      setIsPlayingTTS(false)
+    }
+  }, [])
+
+  // ── 剥离 Markdown 标记，生成纯文本 ────────────────────────────────────────
+  const stripMarkdown = useCallback((md) => {
+    if (!md) return ''
+    return md
+      .replace(/```[\s\S]*?```/g, '')         // 移除代码块
+      .replace(/`([^`]+)`/g, '$1')            // 行内代码 → 纯文本
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // 链接 → 显示文本
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // 图片 → alt 文本
+      .replace(/^(#{1,6})\s+/gm, '')           // 标题 #
+      .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')  // 加粗/斜体
+      .replace(/_([^_]+)_/g, '$1')             // 斜体 _
+      .replace(/^\s*[-*+]\s+/gm, '')           // 无序列表标记
+      .replace(/^\s*\d+\.\s+/gm, '')           // 有序列表标记
+      .replace(/^\s*>\s?/gm, '')                // 引用标记
+      .replace(/---+/g, '')                      // 分割线
+      .replace(/\n{2,}/g, '\n')                 // 多空行 → 单空行
+      .trim()
+  }, [])
+
+  const handleSend = useCallback((text, attachments, fromVoice = false) => {
     if (!text && (!attachments || attachments.length === 0)) return
     if (isSendingRef.current || loading) return
+    // 发送新消息时停止当前朗读
+    stopTTSPlayback()
+    // 设置语音输入标记（用于后续自动朗读）
+    setIsVoiceInput(fromVoice)
     sendMessageDirect(text, attachments)
-  }, [loading, sendMessageDirect])
+  }, [loading, sendMessageDirect, stopTTSPlayback])
+
+  // ── 重新编辑用户消息 ────────────────────────────────────────────────────────
+  const handleConfirmEdit = useCallback((originalMsg) => {
+    const trimmed = editingContent.trim()
+    if (!trimmed) {
+      message.warning('消息内容不能为空')
+      return
+    }
+    if (trimmed === originalMsg.content) {
+      setEditingMsgId(null)
+      setEditingContent('')
+      return
+    }
+    // 停止当前朗读
+    stopTTSPlayback()
+    // 计算截断后的历史（编辑消息之前的所有消息）
+    const currentMsgs = messagesRef.current
+    const editIdx = currentMsgs.findIndex(m => m.id === originalMsg.id)
+    const truncatedMsgs = editIdx >= 0 ? currentMsgs.slice(0, editIdx) : currentMsgs
+    const overrideHistory = truncatedMsgs.map(m => {
+      const entry = { role: m.role }
+      if (m.role === 'assistant' && m.toolCalls?.length > 0) {
+        entry.content = ''
+        entry.toolCalls = m.toolCalls
+      } else {
+        entry.content = m.content || ''
+      }
+      return entry
+    })
+    // 截断该消息及之后的所有消息
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === originalMsg.id)
+      if (idx === -1) return prev
+      return prev.slice(0, idx)
+    })
+    setEditingMsgId(null)
+    setEditingContent('')
+    // 重新发送编辑后的消息（使用截断后的历史）
+    sendMessageDirect(trimmed, [], overrideHistory)
+  }, [editingContent, stopTTSPlayback, sendMessageDirect])
+
+  // ── 语音输入状态回调 ───────────────────────────────────────────────────────
+  const handleVoiceInputStart = useCallback(() => {
+    setIsVoiceInput(true)
+  }, [])
+
+  const handleVoiceInputEnd = useCallback((autoSent) => {
+    // autoSent: true 表示自动发送，false 表示用户主动停止
+    if (!autoSent) {
+      // 用户主动停止录音，不自动发送，重置语音输入标记
+      setIsVoiceInput(false)
+    }
+    // 如果是自动发送，isVoiceInput 保持为 true，用于后续自动朗读
+  }, [])
 
   // ── 自动加载课件（从学习计划页面跳转时触发）──────────────────────────────────
   useEffect(() => {
@@ -1445,20 +1934,136 @@ function Chat() {
                               <AttachmentDisplay attachments={msg.attachments} />
                             </div>
                           )}
-                          <div style={{
-                            background: '#f1f5f9',
-                            borderRadius: 18,
-                            padding: '10px 16px',
-                            color: '#1e293b',
-                            fontSize: 14,
-                            lineHeight: 1.65,
-                            wordBreak: 'break-word',
-                            whiteSpace: 'pre-wrap',
-                          }}>
-                            {msg.content}
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                          {/* 视频处理状态指示器 */}
+                          {msg.isProcessingVideo && (
+                            <div style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              padding: '6px 12px',
+                              background: 'rgba(99,102,241,0.08)',
+                              borderRadius: 8,
+                              marginBottom: 8,
+                              fontSize: 12,
+                              color: '#6366f1',
+                            }}>
+                              <span className="tool-call-spinner" style={{
+                                display: 'inline-block',
+                                width: 12,
+                                height: 12,
+                                border: '2px solid rgba(99,102,241,0.2)',
+                                borderTopColor: '#6366f1',
+                                borderRadius: '50%',
+                                flexShrink: 0,
+                              }} />
+                              <span>正在提取视频关键帧...</span>
+                            </div>
+                          )}
+                          {editingMsgId === msg.id ? (
+                            /* ── 编辑态 ── */
+                            <div style={{
+                              background: '#fff',
+                              border: '1.5px solid #6366f1',
+                              borderRadius: 18,
+                              padding: '8px 12px',
+                            }}>
+                              <textarea
+                                value={editingContent}
+                                onChange={e => setEditingContent(e.target.value)}
+                                autoFocus
+                                style={{
+                                  width: '100%',
+                                  minHeight: 48,
+                                  border: 'none',
+                                  outline: 'none',
+                                  resize: 'none',
+                                  fontSize: 14,
+                                  lineHeight: 1.65,
+                                  color: '#1e293b',
+                                  background: 'transparent',
+                                  fontFamily: 'inherit',
+                                  padding: 0,
+                                }}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault()
+                                    handleConfirmEdit(msg)
+                                  }
+                                  if (e.key === 'Escape') {
+                                    setEditingMsgId(null)
+                                    setEditingContent('')
+                                  }
+                                }}
+                              />
+                              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 6 }}>
+                                <Tooltip title="取消">
+                                  <motion.button
+                                    whileHover={{ scale: 1.05 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={() => { setEditingMsgId(null); setEditingContent('') }}
+                                    style={{
+                                      width: 28, height: 28, borderRadius: 8,
+                                      border: '1px solid #e2e8f0', background: '#fff',
+                                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                      color: '#64748b',
+                                    }}
+                                  >
+                                    <CloseOutlined style={{ fontSize: 12 }} />
+                                  </motion.button>
+                                </Tooltip>
+                                <Tooltip title="发送">
+                                  <motion.button
+                                    whileHover={{ scale: 1.05 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={() => handleConfirmEdit(msg)}
+                                    style={{
+                                      width: 28, height: 28, borderRadius: 8,
+                                      border: 'none', background: '#6366f1',
+                                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                      color: '#fff',
+                                    }}
+                                  >
+                                    <SendOutlined style={{ fontSize: 12 }} />
+                                  </motion.button>
+                                </Tooltip>
+                              </div>
+                            </div>
+                          ) : (
+                            /* ── 展示态 ── */
+                            <div style={{
+                              background: '#f1f5f9',
+                              borderRadius: 18,
+                              padding: '10px 16px',
+                              color: '#1e293b',
+                              fontSize: 14,
+                              lineHeight: 1.65,
+                              wordBreak: 'break-word',
+                              whiteSpace: 'pre-wrap',
+                            }}>
+                              {msg.content}
+                            </div>
+                          )}
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, marginTop: 4 }}>
                             <span style={{ fontSize: 11, color: '#94a3b8' }}>{formatTime(msg.timestamp)}</span>
+                            {editingMsgId !== msg.id && !loading && (
+                              <Tooltip title="重新编辑">
+                                <motion.button
+                                  whileHover={{ scale: 1.1 }}
+                                  whileTap={{ scale: 0.9 }}
+                                  onClick={() => { setEditingMsgId(msg.id); setEditingContent(msg.content) }}
+                                  style={{
+                                    width: 22, height: 22, borderRadius: 6,
+                                    border: 'none', background: 'transparent', cursor: 'pointer',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    color: '#94a3b8', transition: 'all 0.15s',
+                                  }}
+                                  onMouseEnter={e => e.currentTarget.style.color = '#6366f1'}
+                                  onMouseLeave={e => e.currentTarget.style.color = '#94a3b8'}
+                                >
+                                  <EditOutlined style={{ fontSize: 11 }} />
+                                </motion.button>
+                              </Tooltip>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1493,6 +2098,12 @@ function Chat() {
                 loading={loading}
                 stopping={stopping}
                 onStop={stopGeneration}
+                onVoiceInputStart={handleVoiceInputStart}
+                onVoiceInputEnd={handleVoiceInputEnd}
+                isVoiceInput={isVoiceInput}
+                autoReadEnabled={autoReadEnabled}
+                onAutoReadToggle={() => setAutoReadEnabled(prev => !prev)}
+                isPlayingTTS={isPlayingTTS}
               />
             </div>
           </div>

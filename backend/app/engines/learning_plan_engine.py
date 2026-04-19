@@ -504,6 +504,24 @@ class LearningPlanEngine:
         nodes = json.loads(knowledge_graph.nodes) if isinstance(knowledge_graph.nodes, str) else knowledge_graph.nodes
         edges = json.loads(knowledge_graph.edges) if isinstance(knowledge_graph.edges, str) else knowledge_graph.edges
 
+        # 1.1 获取学习深度（从学习目标中获取）
+        study_depth = "intermediate"  # 默认值
+        if study_goal_id:
+            from app.models.study_goal import StudyGoal
+            study_goal = self.db.query(StudyGoal).filter(StudyGoal.id == study_goal_id).first()
+            if study_goal and study_goal.study_depth:
+                study_depth = study_goal.study_depth
+        
+        # 根据学习深度调整章节数量上限
+        depth_chapter_config = {
+            "basic": {"range": "4-6", "desc": "了解", "max": 6},
+            "intermediate": {"range": "7-9", "desc": "理解", "max": 9},
+            "advanced": {"range": "10-12", "desc": "深入", "max": 12}
+        }
+        chapter_config = depth_chapter_config.get(study_depth, depth_chapter_config["intermediate"])
+        
+        print(f"[学习计划生成] 学习深度：{chapter_config['desc']}，章节数量范围：{chapter_config['range']}章")
+
         # 2. 校验和清理节点
         valid_nodes = []
         for node in nodes:
@@ -548,12 +566,13 @@ class LearningPlanEngine:
             nodes=sorted_nodes,
             edges=edges,
             constraints={
-                "max_chapters": max_chapters,
+                "max_chapters": chapter_config["max"],
                 "max_sections_per_chapter": max_sections_per_chapter
             },
             graph_title=knowledge_graph.title,
             graph_description=knowledge_graph.description or "",
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            study_depth=study_depth
         )
         
         # 获取章节列表

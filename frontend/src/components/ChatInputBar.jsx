@@ -10,6 +10,8 @@ import {
   CloseOutlined,
   FileOutlined,
   VideoCameraFilled,
+  SoundOutlined,
+  MutedOutlined,
 } from '@ant-design/icons'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -25,6 +27,7 @@ function getFileCategory(file) {
   const name = file.name.toLowerCase()
   if (/\.(jpg|jpeg|png|gif|webp)$/.test(name)) return 'image'
   if (/\.(mp4|webm|mov)$/.test(name)) return 'video'
+  if (/\.(mp3|wav|ogg|flac|aac|m4a|wma)$/.test(name)) return 'audio'
   return 'file'
 }
 
@@ -33,6 +36,7 @@ function getFileCategory(file) {
 function AttachmentItem({ attachment, onRemove }) {
   const isImage = attachment.type === 'image'
   const isVideo = attachment.type === 'video'
+  const isAudio = attachment.type === 'audio'
 
   const containerStyle = {
     position: 'relative',
@@ -97,7 +101,9 @@ function AttachmentItem({ attachment, onRemove }) {
     >
       {isVideo
         ? <VideoCameraFilled style={{ color: '#6366f1', fontSize: 16, flexShrink: 0 }} />
-        : <FileOutlined style={{ color: '#64748b', fontSize: 16, flexShrink: 0 }} />
+        : isAudio
+          ? <AudioOutlined style={{ color: '#10b981', fontSize: 16, flexShrink: 0 }} />
+          : <FileOutlined style={{ color: '#64748b', fontSize: 16, flexShrink: 0 }} />
       }
       <div style={{ overflow: 'hidden', minWidth: 0 }}>
         <div style={{ fontSize: 11.5, fontWeight: 600, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -160,6 +166,12 @@ export default function ChatInputBar({
   stopping = false,
   onStop,
   disabled = false,
+  onVoiceInputStart,
+  onVoiceInputEnd,
+  isVoiceInput: isVoiceInputProp,
+  autoReadEnabled = true,
+  onAutoReadToggle,
+  isPlayingTTS = false,
 }) {
   const [attachments, setAttachments] = useState([])
   const [isDragging, setIsDragging] = useState(false)
@@ -171,10 +183,21 @@ export default function ChatInputBar({
   const textareaRef = useRef(null)
   const recognitionRef = useRef(null)
   const dragCounterRef = useRef(0)
+  const silenceTimerRef = useRef(null)
+  const hasSpeechResultRef = useRef(false)
+  const isVoiceInputRef = useRef(false)
 
   const speechSupported =
     typeof window !== 'undefined' &&
     !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+
+  // ── 清理静默检测定时器 ────────────────────────────────────────────────────
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+  }, [])
 
   // ── 清理 object URLs ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -182,9 +205,11 @@ export default function ChatInputBar({
       attachments.forEach(a => {
         if (a.preview) URL.revokeObjectURL(a.preview)
       })
+      // 清理静默检测定时器
+      clearSilenceTimer()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [clearSilenceTimer])
 
   // ── 添加附件 ──────────────────────────────────────────────────────────────
   const addFiles = useCallback((files) => {
@@ -280,8 +305,13 @@ export default function ChatInputBar({
     }
 
     if (isRecording) {
+      // 用户主动点击停止，不自动发送
+      clearSilenceTimer()
       recognitionRef.current?.stop()
       setIsRecording(false)
+      hasSpeechResultRef.current = false
+      isVoiceInputRef.current = false
+      onVoiceInputEnd?.(false) // false 表示用户主动停止，不自动发送
       return
     }
 
@@ -291,28 +321,73 @@ export default function ChatInputBar({
     recognition.continuous = true
     recognition.interimResults = true
 
+    // 标记语音输入开始
+    isVoiceInputRef.current = true
+    hasSpeechResultRef.current = false
+    onVoiceInputStart?.()
+
     recognition.onresult = (event) => {
       let transcript = ''
+      let isFinal = false
       for (let i = event.resultIndex; i < event.results.length; i++) {
         transcript += event.results[i][0].transcript
+        if (event.results[i].isFinal) {
+          isFinal = true
+        }
       }
+      
+      // 更新输入值
       onChange?.(value + transcript)
+      
+      // 如果有识别结果，标记为有内容并启动静默检测
+      if (transcript.trim()) {
+        hasSpeechResultRef.current = true
+        
+        // 重置静默检测定时器
+        clearSilenceTimer()
+        silenceTimerRef.current = setTimeout(() => {
+          // 1.5秒静默后自动发送
+          if (hasSpeechResultRef.current && value.trim()) {
+            // 停止语音识别
+            recognition.stop()
+            setIsRecording(false)
+            
+            // 触发发送（传递 isVoiceInput 标记）
+            onSend?.(value.trim(), [], true)
+            onChange?.('')
+            
+            // 通知父组件语音输入结束（自动发送）
+            onVoiceInputEnd?.(true)
+            
+            // 重置状态
+            hasSpeechResultRef.current = false
+            isVoiceInputRef.current = false
+          }
+        }, 1500)
+      }
     }
 
     recognition.onerror = (event) => {
       console.error('[ChatInputBar] Speech recognition error:', event.error)
+      clearSilenceTimer()
       setIsRecording(false)
+      hasSpeechResultRef.current = false
+      isVoiceInputRef.current = false
+      onVoiceInputEnd?.(false)
       message.error('语音识别出错，请重试')
     }
 
     recognition.onend = () => {
+      clearSilenceTimer()
       setIsRecording(false)
+      // 注意：如果是自动发送导致的 stop，这里不需要额外处理
+      // 因为已经在定时器中处理了
     }
 
     recognition.start()
     recognitionRef.current = recognition
     setIsRecording(true)
-  }, [isRecording, speechSupported, onChange, value])
+  }, [isRecording, speechSupported, onChange, value, onSend, onVoiceInputStart, onVoiceInputEnd, clearSilenceTimer])
 
   // ── 发送 ─────────────────────────────────────────────────────────────────
   const handleSend = useCallback(() => {
@@ -320,10 +395,14 @@ export default function ChatInputBar({
     if (!text && attachments.length === 0) return
     if (loading || disabled) return
 
-    onSend?.(text, attachments)
+    // 如果是语音输入模式，传递 isVoiceInput 标记
+    const isFromVoice = isVoiceInputRef.current
+    onSend?.(text, attachments, isFromVoice)
     onChange?.('')
     // 清空附件（revoke已在发送侧或下次 effect 处理）
     setAttachments([])
+    // 重置语音输入标记
+    isVoiceInputRef.current = false
   }, [value, attachments, loading, disabled, onSend, onChange])
 
   // ── 键盘 ─────────────────────────────────────────────────────────────────
@@ -354,7 +433,7 @@ export default function ChatInputBar({
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".pdf,.docx,.txt,.csv,.xlsx"
+        accept=".pdf,.docx,.doc,.txt,.csv,.xlsx,.mp3,.wav,.ogg,.flac,.aac,.m4a"
         style={{ display: 'none' }}
         onChange={handleFileInput}
       />
@@ -461,7 +540,7 @@ export default function ChatInputBar({
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <ToolbarBtn
               icon={<PaperClipOutlined style={{ fontSize: 15 }} />}
-              tooltip="附件（PDF/Word/TXT/CSV/Excel）"
+              tooltip="附件（PDF/Word/TXT/CSV/Excel/音频）"
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled}
             />
@@ -487,7 +566,7 @@ export default function ChatInputBar({
                   width: 32,
                   height: 32,
                   borderRadius: '50%',
-                  border: 'none',
+                  border: isRecording ? '2px solid #ef4444' : 'none',
                   cursor: speechSupported ? 'pointer' : 'not-allowed',
                   display: 'flex',
                   alignItems: 'center',
@@ -495,11 +574,19 @@ export default function ChatInputBar({
                   transition: 'all 0.15s',
                   background: isRecording ? '#ef4444' : 'transparent',
                   color: isRecording ? '#fff' : '#64748b',
+                  boxShadow: isRecording ? '0 0 0 4px rgba(239,68,68,0.2)' : 'none',
                 }}
               >
                 <AudioOutlined style={{ fontSize: 15 }} />
               </motion.button>
             </Tooltip>
+            <ToolbarBtn
+              icon={autoReadEnabled ? <SoundOutlined style={{ fontSize: 15 }} /> : <MutedOutlined style={{ fontSize: 15 }} />}
+              tooltip={autoReadEnabled ? '自动朗读已开启（语音对话后AI回复自动朗读）' : '自动朗读已关闭'}
+              onClick={onAutoReadToggle}
+              active={autoReadEnabled}
+              activeStyle={{ background: '#6366f1' }}
+            />
           </div>
 
           {/* 右侧发送/停止按钮 */}

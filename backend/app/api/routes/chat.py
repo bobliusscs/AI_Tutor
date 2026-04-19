@@ -16,7 +16,7 @@ import logging
 from app.core.database import get_db
 from app.api.deps import get_current_student_id
 from app.agent.core import AgentCore
-from app.services.engine_manager import _create_ai_provider
+from app.services.engine_manager import get_module_provider
 from app.models.study_goal import StudyGoal, StudyGoalStatus
 from app.schemas import Response
 
@@ -32,6 +32,8 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     images: Optional[List[str]] = None  # base64 编码的图片列表
     documents: Optional[List[dict]] = None  # 文档附件列表 [{"name": "xxx.pdf", "type": "pdf", "data": "base64..."}]
+    videos: Optional[List[str]] = None  # base64 编码的视频列表
+    audios: Optional[List[str]] = None  # base64 编码的音频列表
     goal_id: Optional[int] = None  # 当前学习目标ID
 
 
@@ -64,7 +66,7 @@ async def chat_message(
     学生ID从 JWT token 自动获取。
     """
     try:
-        ai_provider = _create_ai_provider()
+        ai_provider = get_module_provider("agent")
         agent = AgentCore(
             db=db,
             ai_provider=ai_provider,
@@ -97,6 +99,8 @@ async def chat_message(
             history=request.history,
             images=request.images,
             documents=request.documents,
+            videos=request.videos,
+            audios=request.audios,
             current_goal=current_goal,
         ):
             if "content" in event:
@@ -142,7 +146,7 @@ async def chat_message_stream(
                        request.message[:50] if request.message else '',
                        len(request.images) if request.images else 0,
                        len(request.documents) if request.documents else 0)
-            ai_provider = _create_ai_provider()
+            ai_provider = get_module_provider("agent")
             agent = AgentCore(
                 db=db,
                 ai_provider=ai_provider,
@@ -174,6 +178,8 @@ async def chat_message_stream(
                 history=request.history,
                 images=request.images,
                 documents=request.documents,
+                videos=request.videos,
+                audios=request.audios,
                 current_goal=current_goal,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

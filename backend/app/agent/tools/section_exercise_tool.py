@@ -62,7 +62,8 @@ async def get_section_exercises(
         if not goal:
             return json.dumps({
                 "success": False,
-                "error": "学习目标不存在或无权访问"
+                "error": "学习目标不存在或无权访问",
+                "hint": "告知用户该学习目标不存在，建议重新选择"
             }, ensure_ascii=False)
         
         # ========== 2. 获取学习计划 ==========
@@ -74,7 +75,8 @@ async def get_section_exercises(
         if not plan:
             return json.dumps({
                 "success": False,
-                "error": "该学习目标还没有学习计划"
+                "error": "该学习目标还没有学习计划",
+                "hint": "告知用户需要先创建学习计划"
             }, ensure_ascii=False)
         
         # ========== 3. 定位当前节 ==========
@@ -198,7 +200,8 @@ async def get_section_exercises(
         if not target_section:
             return json.dumps({
                 "success": False,
-                "error": "没有找到可练习的小节"
+                "error": "没有找到可练习的小节",
+                "hint": "告知用户当前没有可练习的小节，建议检查学习计划"
             }, ensure_ascii=False)
         
         # 补充获取章节信息
@@ -228,7 +231,8 @@ async def get_section_exercises(
         if not knowledge_point_ids:
             return json.dumps({
                 "success": False,
-                "error": f"该小节「{target_section.title}」暂未配置知识点，无法提供习题"
+                "error": f"该小节「{target_section.title}」暂未配置知识点，无法提供习题",
+                "hint": "告知用户该小节尚未配置知识点，无法生成习题，建议先生成课件"
             }, ensure_ascii=False)
         
         # ========== 5. 获取知识点名称映射 ==========
@@ -308,7 +312,8 @@ async def get_section_exercises(
         if not selected_questions:
             return json.dumps({
                 "success": False,
-                "error": "该小节暂无可练习的题目，请先学习课件内容"
+                "error": "该小节暂无可练习的题目，请先学习课件内容",
+                "hint": "告知用户该小节暂无习题，建议先学习课件内容"
             }, ensure_ascii=False)
         
         # ========== 7. 构建返回数据 ==========

@@ -33,11 +33,14 @@ class KnowledgeGraphEngine:
         根据学习目标生成知识图谱（无参考教材时）
         
         策略流程：
-        1. 第一步：调用模型将主题拆分为 6-12 个类别
+        1. 第一步：调用模型将主题拆分为 N 个类别
+           - basic(了解): 4-6 个类别
+           - intermediate(理解): 7-9 个类别
+           - advanced(深入): 10-12 个类别
         2. 第二步：分别为每个类别生成子知识图谱
-           - basic(了解): 每类 5 个知识点左右
-           - intermediate(熟悉): 每类 10 个知识点左右
-           - advanced(深入): 每类 15 个知识点以上
+           - basic(了解): 每类 4-6 个知识点
+           - intermediate(理解): 每类 7-10 个知识点
+           - advanced(深入): 每类 13-15 个知识点
         3. 第三步：调用模型融合所有子图谱，去重、补漏、优化关系
         
         Args:
@@ -51,11 +54,18 @@ class KnowledgeGraphEngine:
         """
         # 根据学习深度确定每类知识点数量范围
         depth_config = {
-            "basic": {"min": 4, "max": 6, "target": 5},       # 了解: 每类5个左右
-            "intermediate": {"min": 8, "max": 12, "target": 10},  # 熟悉: 每类10个左右
-            "advanced": {"min": 13, "max": 18, "target": 15}  # 深入: 每类15个以上
+            "basic": {"min": 4, "max": 6, "target": 5, "desc": "了解"},       # 了解: 4-6类，每类5个左右
+            "intermediate": {"min": 7, "max": 10, "target": 10, "desc": "理解"},  # 理解: 7-9类，每类10个左右
+            "advanced": {"min": 13, "max": 15, "target": 15, "desc": "深入"}  # 深入: 10-12类，每类15个左右
+        }
+        # 根据学习深度确定类别数量范围
+        depth_category_config = {
+            "basic": {"min": 4, "max": 6, "desc": "4-6", "target": "了解"},
+            "intermediate": {"min": 7, "max": 9, "desc": "7-9", "target": "理解"},
+            "advanced": {"min": 10, "max": 12, "desc": "10-12", "target": "深入"}
         }
         nodes_config = depth_config.get(study_depth, depth_config["intermediate"])
+        category_config = depth_category_config.get(study_depth, depth_category_config["intermediate"])
         
         # 构建 AI 上下文
         context = {
@@ -77,17 +87,18 @@ class KnowledgeGraphEngine:
             await progress_callback({
                 "status": "decomposing_categories",
                 "progress": 5,
-                "message": f"正在分析「{topic}」的知识结构..."
+                "message": f"正在分析「{topic}」的知识结构（{category_config['desc']}个类别）..."
             })
         
         categories_result = await self.ai_provider.decompose_into_categories(
             topic=topic,
-            context=context
+            context=context,
+            study_depth=study_depth  # 传入学习深度参数
         )
         
         categories = categories_result.get("categories", [])
-        if len(categories) < 6:
-            print(f"警告：类别数量不足({len(categories)}个)，期望6-12个")
+        if len(categories) < category_config["min"]:
+            print(f"警告：类别数量不足({len(categories)}个)，期望{category_config['desc']}个")
             # 如果类别太少，回退到普通模式
             if len(categories) < 3:
                 print("类别数量过少，回退到普通生成模式")

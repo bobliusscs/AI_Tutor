@@ -13,7 +13,7 @@ import random
 
 from app.core.database import get_db
 from app.api.deps import get_current_student_id
-from app.services.engine_manager import _create_ai_provider
+from app.services.engine_manager import get_module_provider
 from app.schemas import Response
 from app.models.study_goal import StudyGoal
 from app.models.assessment import QuestionBank, Assessment
@@ -31,8 +31,7 @@ def _get_ai_provider():
     获取AI Provider实例（使用缓存的单例，确保连接复用）
     注意：配置变更时需要调用 reset_ai_provider_cache() 清除缓存
     """
-    from app.services.engine_manager import get_ai_provider
-    return get_ai_provider()
+    return get_module_provider("exercise")
 
 
 def _parse_nodes(graph_nodes):

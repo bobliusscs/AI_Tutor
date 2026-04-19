@@ -9,7 +9,7 @@ from jose import JWTError, jwt
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.services.engine_manager import EngineManager, _create_ai_provider
+from app.services.engine_manager import EngineManager
 from app.models.student import Student
 
 
@@ -20,13 +20,9 @@ security = HTTPBearer(auto_error=False)
 def get_engine_manager(db: Session = Depends(get_db)) -> EngineManager:
     """
     获取引擎管理器（动态读取最新配置）
+    每个引擎内部会根据 model_config.json 获取各自的 AI Provider
     """
-    from app.core.config import settings
-    
-    # 动态创建 AI Provider，读取最新的 .env 配置
-    ai_provider = _create_ai_provider()
-    
-    return EngineManager(db, ai_provider)
+    return EngineManager(db)
 
 
 def get_current_student(

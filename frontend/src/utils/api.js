@@ -341,9 +341,11 @@ export const materialAPI = {
 
 // ============ 设置 API ============
 export const settingsAPI = {
-  getCurrent: () => apiClient.get('/settings/current'),
-  update: (data) => apiClient.post('/settings/update', data),
-  getPresets: () => apiClient.get('/settings/presets'),
+  getModelConfig: () => apiClient.get('/settings/model-config'),
+  saveModelConfig: (data) => apiClient.post('/settings/model-config', data),
+  testModel: (params) => apiClient.post('/settings/test-model', null, { params }),
+  testTavily: (apiKey) => apiClient.post('/settings/test-tavily', null, { params: { api_key: apiKey } }),
+  testTTS: (params) => apiClient.post('/settings/test-tts', null, { params }),
 }
 
 // ============ Skill管理 API ============
@@ -434,6 +436,71 @@ export const ttsAPI = {
           } catch (e) {
             // SyntaxError 是 JSON 解析失败，只打印日志
             // 其他错误是业务错误，需要向上传播
+            if (e instanceof SyntaxError) {
+              console.error('解析SSE数据失败:', e, dataStr)
+            } else {
+              throw e
+            }
+          }
+        }
+      }
+    }
+  },
+  // 合成指定文本的语音（用于AI回复自动朗读）
+  synthesizeText: (text, speaker = null) => {
+    const data = { text }
+    if (speaker) data.speaker = speaker
+    return apiClient.post('/tts/synthesize-text', data, {
+      timeout: 60000  // 1分钟超时
+    })
+  },
+  // 一键合成章节所有小节的PPT音频（SSE流式）
+  synthesizeChapterAudio: async (chapterId, speaker = null, onProgress) => {
+    const url = `${apiClient.defaults.baseURL}/tts/synthesize-chapter/${chapterId}`
+    const data = {}
+    if (speaker) data.speaker = speaker
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+      },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+    
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.slice(6)
+          try {
+            const data = JSON.parse(dataStr)
+            if (onProgress) {
+              onProgress(data)
+            }
+            
+            if (data.type === 'complete') {
+              return data
+            }
+            if (data.type === 'error') {
+              throw new Error(data.message)
+            }
+          } catch (e) {
             if (e instanceof SyntaxError) {
               console.error('解析SSE数据失败:', e, dataStr)
             } else {

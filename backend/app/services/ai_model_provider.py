@@ -29,13 +29,14 @@ class BaseModelProvider(ABC):
         pass
 
     @abstractmethod
-    async def decompose_into_categories(self, topic: str, context: dict) -> dict:
+    async def decompose_into_categories(self, topic: str, context: dict, study_depth: str = "intermediate") -> dict:
         """
         将学习主题拆分为多个类别
         
         Args:
             topic: 学习主题
             context: 上下文信息
+            study_depth: 学习深度 (basic/intermediate/advanced)
             
         Returns:
             dict: {"categories": [{"id": "", "name": "", "description": "", "scope": ""}]}
@@ -365,52 +366,65 @@ class OpenAIProvider(BaseModelProvider):
             return result
         return result
 
-    async def decompose_into_categories(self, topic: str, context: dict) -> dict:
+    async def decompose_into_categories(self, topic: str, context: dict, study_depth: str = "intermediate") -> dict:
         """
         将学习主题拆分为多个类别
         
-        使用策略：
-        1. 调用模型将主题拆分为6-12个类别
-        2. 每个类别包含：id, name, description, scope（涵盖范围）
+        根据学习深度调整类别数量：
+        - basic(了解): 4-6 个类别
+        - intermediate(理解): 7-9 个类别
+        - advanced(深入): 10-12 个类别
         """
-        system_prompt = """你是知识架构师，擅长将复杂领域拆解为层次分明的知识体系。
+        # 根据学习深度确定类别数量范围
+        depth_category_config = {
+            "basic": {"min": 4, "max": 6, "desc": "4-6", "target": "了解"},
+            "intermediate": {"min": 7, "max": 9, "desc": "7-9", "target": "理解"},
+            "advanced": {"min": 10, "max": 12, "desc": "10-12", "target": "深入"}
+        }
+        category_config = depth_category_config.get(study_depth, depth_category_config["intermediate"])
+        
+        system_prompt = f"""你是知识架构师，擅长将复杂领域拆解为层次分明的知识体系。
 
 ## 你的任务
-将给定的学习主题拆分为 6-12 个互不重叠、逻辑清晰的类别/模块。
+将给定的学习主题拆分为 {category_config['desc']} 个互不重叠、逻辑清晰的类别/模块。
+
+## 学习深度要求
+本次知识图谱的学习深度为「{category_config['target']}」，请据此生成适当数量的类别。
 
 ## 输出要求
 请严格按照以下 JSON 格式输出，只输出 categories 数组，不要输出其他内容：
 
 ```json
-{
+{{
   "categories": [
-    {
+    {{
       "id": "唯一标识符（英文驼峰）",
       "name": "类别名称（简洁的中文名称）",
       "description": "该类别的简要描述（1-2句话）",
       "scope": "该类别涵盖的具体知识点范围（用中文描述）"
-    }
+    }}
   ]
-}
+}}
 ```
 
 ## 设计原则
 1. **互不重叠**：每个类别应聚焦于一个明确的子领域
 2. **覆盖全面**：涵盖主题的所有重要方面
 3. **层次清晰**：按逻辑顺序排列
-4. **数量适中**：6-12个类别最佳"""
+4. **数量要求**：严格生成 {category_config['desc']} 个类别"""
         
         user_prompt = f"""## 学习主题
 - 主题：{topic}
 - 学科：{context.get('subject', '')}
 - 描述：{context.get('description', '')}
+- 学习深度：{category_config['target']}
 
-请将「{topic}」拆分为多个类别。
+请将「{topic}」拆分为 {category_config['desc']} 个类别。
 
 【重要】
 1. 只生成与「{topic}」直接相关的专业类别
 2. 不要生成「通用编程」「数据结构」等与主题无关的类别
-3. 类别数量控制在 6-12 个"""
+3. 类别数量严格控制在 {category_config['desc']} 个"""
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -445,11 +459,11 @@ class OpenAIProvider(BaseModelProvider):
         
         # 验证结果
         categories = result.get("categories", [])
-        if len(categories) < 6:
-            print(f"警告：类别数量不足({len(categories)}个)，期望6-12个")
-        if len(categories) > 12:
-            print(f"警告：类别数量过多({len(categories)}个)，将截断到12个")
-            result["categories"] = categories[:12]
+        if len(categories) < category_config["min"]:
+            print(f"警告：类别数量不足({len(categories)}个)，期望{category_config['desc']}个")
+        if len(categories) > category_config["max"]:
+            print(f"警告：类别数量过多({len(categories)}个)，将截断到{category_config['max']}个")
+            result["categories"] = categories[:category_config["max"]]
         
         return result
 
@@ -459,14 +473,14 @@ class OpenAIProvider(BaseModelProvider):
         
         根据学习深度调整知识点数量：
         - basic(了解): 4-6 个知识点
-        - intermediate(熟悉): 8-12 个知识点
-        - advanced(深入): 13-18 个知识点
+        - intermediate(理解): 7-10 个知识点
+        - advanced(深入): 13-15 个知识点
         """
         # 根据学习深度确定知识点数量范围
         depth_config = {
-            "basic": {"min": 4, "max": 6, "target": 5, "desc": "4-6"},
-            "intermediate": {"min": 8, "max": 12, "target": 10, "desc": "8-12"},
-            "advanced": {"min": 13, "max": 18, "target": 15, "desc": "13-18"}
+            "basic": {"min": 4, "max": 6, "target": 5, "desc": "4-6", "target_name": "了解"},
+            "intermediate": {"min": 7, "max": 10, "target": 10, "desc": "7-10", "target_name": "理解"},
+            "advanced": {"min": 13, "max": 15, "target": 15, "desc": "13-15", "target_name": "深入"}
         }
         config = depth_config.get(study_depth, depth_config["intermediate"])
         
@@ -657,31 +671,243 @@ class OllamaProvider(BaseModelProvider):
     def _convert_messages_for_ollama(self, messages: list) -> list:
         """
         将消息转换为 Ollama 多模态格式
-        Ollama 支持的多模态格式：
-        {
-            "role": "user",
-            "content": "描述图片",
-            "images": ["base64encodedstring"]
-        }
+        
+        支持多种输入格式：
+        1. Ollama 原生格式: {"role": "user", "content": "...", "images": ["base64..."]}
+        2. OpenAI Vision 格式: {"role": "user", "content": [{"type": "text", ...}, {"type": "image_url", ...}]}
+        
+        注意：Ollama 的 /v1/chat/completions 端点仅支持 text 和 image_url 类型，
+        不支持 video_url 和 input_audio。视频需要通过帧提取转为图片处理。
+        
+        统一转换为 Ollama 原生格式（使用 /v1/chat/completions 兼容端点时保留 OpenAI 格式）。
         """
         converted = []
         for msg in messages:
-            if isinstance(msg, dict):
-                # 如果消息包含 images 字段，保持原样（已经是多模态格式）
-                if 'images' in msg and msg['images']:
-                    converted.append({
-                        "role": msg.get("role", "user"),
-                        "content": msg.get("content", ""),
-                        "images": msg["images"]
-                    })
-                else:
-                    converted.append({
-                        "role": msg.get("role", "user"),
-                        "content": msg.get("content", "")
-                    })
-            else:
+            if not isinstance(msg, dict):
                 converted.append(msg)
+                continue
+            
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            images_list = list(msg.get("images", []))  # 已有的 images 字段
+            
+            # 处理 OpenAI 多模态格式的 content 数组
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            text_parts.append(part.get("text", ""))
+                        elif part.get("type") == "image_url":
+                            # 从 data:image/jpeg;base64,... 格式中提取纯 base64
+                            url = part.get("image_url", {}).get("url", "")
+                            if url.startswith("data:"):
+                                base64_data = url.split(",", 1)[-1] if "," in url else url
+                                images_list.append(base64_data)
+                            else:
+                                pass
+                        elif part.get("type") == "video_url":
+                            # 视频 - Ollama /v1/chat/completions 端点不支持 video_url
+                            # 视频应该在前端或 agent.py 中通过帧提取转为图片处理
+                            # 此处忽略，因为不应该收到 video_url 类型的内容
+                            pass
+                        elif part.get("type") == "input_audio":
+                            # 音频 - Ollama /v1/chat/completions 端点不支持 input_audio
+                            # 此处忽略，因为不应该收到 input_audio 类型的内容
+                            pass
+                content = "\n".join(text_parts)
+            
+            # 构建转换后的消息
+            new_msg = {"role": role, "content": content}
+            if images_list:
+                new_msg["images"] = images_list
+            converted.append(new_msg)
+        
         return converted
+    
+    async def chat_with_tools(self, messages: list, tools: list) -> dict:
+        """
+        支持工具调用的对话（OpenAI Function Calling 兼容）
+        
+        Ollama 的 /v1/chat/completions 端点支持 OpenAI Function Calling 格式，
+        也原生支持 image_url 多模态格式，但不支持 video_url 和 input_audio。
+        视频和音频需要在前端或 agent.py 中通过帧提取/转录转为文本或图片处理。
+        因此直接透传消息，不做 Ollama 原生格式转换。
+        
+        Args:
+            messages: 消息列表
+            tools: 工具定义列表(OpenAI格式)
+            
+        Returns:
+            {"content": str, "tool_calls": list} 或 {"content": str}
+        """
+        import httpx
+        import logging
+        _logger = logging.getLogger(__name__)
+        
+        headers = {"Content-Type": "application/json"}
+        
+        # 直接使用原始消息（/v1/chat/completions 端点原生支持 OpenAI 多模态格式）
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": False
+        }
+        
+        _logger.info(f"[Ollama-Tools] 请求URL: {self.base_url}/v1/chat/completions")
+        _logger.info(f"[Ollama-Tools] 模型: {self.model}, 消息数: {len(messages)}, 工具数: {len(tools)}")
+        
+        transport = httpx.AsyncHTTPTransport(proxy=None)
+        async with httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+            response = await client.post(
+                f"{self.base_url}/v1/chat/completions",
+                headers=headers,
+                json=payload
+            )
+            
+            if response.status_code != 200:
+                error_body = response.text
+                _logger.error(f"[Ollama-Tools] API错误: status={response.status_code}, body={error_body[:1000]}")
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            choice = data["choices"][0]["message"]
+            result = {"content": choice.get("content", "")}
+            
+            # 检查是否有工具调用
+            if "tool_calls" in choice and choice["tool_calls"]:
+                result["tool_calls"] = []
+                for tc in choice["tool_calls"]:
+                    result["tool_calls"].append({
+                        "id": tc.get("id", ""),
+                        "type": tc.get("type", "function"),
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"]["arguments"]
+                        }
+                    })
+                _logger.info(f"[Ollama-Tools] 检测到 {len(result['tool_calls'])} 个工具调用")
+            
+            return result
+    
+    async def chat_with_tools_stream(self, messages: list, tools: list):
+        """
+        支持工具调用的流式对话
+        
+        使用 Ollama 的 /v1/chat/completions 流式端点，
+        同时支持工具调用检测和内容流式输出。
+        直接透传消息（/v1/chat/completions 原生支持 OpenAI image_url 多模态格式，
+        但不支持 video_url 和 input_audio）。
+        
+        Yields:
+            {"type": "content", "content": str} - 文本内容块
+            {"type": "tool_calls", "tool_calls": list} - 完整的工具调用列表
+        """
+        import httpx
+        import logging
+        _logger = logging.getLogger(__name__)
+        
+        headers = {"Content-Type": "application/json"}
+        
+        # 直接使用原始消息
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": True
+        }
+        
+        _logger.info(f"[Ollama-Tools-Stream] 请求URL: {self.base_url}/v1/chat/completions")
+        _logger.info(f"[Ollama-Tools-Stream] 模型: {self.model}, 消息数: {len(messages)}, 工具数: {len(tools)}")
+        
+        transport = httpx.AsyncHTTPTransport(proxy=None)
+        async with httpx.AsyncClient(transport=transport) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=httpx.Timeout(120.0, connect=10.0)
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode('utf-8', errors='replace')
+                    _logger.error(f"[Ollama-Tools-Stream] API错误: status={response.status_code}, body={error_text[:1000]}")
+                    response.raise_for_status()
+                
+                # 累积工具调用的delta
+                tool_calls_map = {}  # {index: {id, type, function: {name, arguments}}}
+                has_tool_calls = False
+                
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    
+                    # SSE格式
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        
+                        choices = data.get("choices", [])
+                        if not choices:
+                            continue
+                        
+                        delta = choices[0].get("delta", {})
+                        
+                        # 处理内容块 - 直接流式输出
+                        content = delta.get("content")
+                        if content:
+                            yield {"type": "content", "content": content}
+                        
+                        # 处理工具调用delta - 累积
+                        if "tool_calls" in delta:
+                            has_tool_calls = True
+                            for tc_delta in delta["tool_calls"]:
+                                idx = tc_delta.get("index", 0)
+                                
+                                if idx not in tool_calls_map:
+                                    tool_calls_map[idx] = {
+                                        "id": tc_delta.get("id", ""),
+                                        "type": tc_delta.get("type", "function"),
+                                        "function": {
+                                            "name": "",
+                                            "arguments": ""
+                                        }
+                                    }
+                                
+                                # 累积id
+                                if tc_delta.get("id"):
+                                    tool_calls_map[idx]["id"] = tc_delta["id"]
+                                
+                                # 累积type
+                                if tc_delta.get("type"):
+                                    tool_calls_map[idx]["type"] = tc_delta["type"]
+                                
+                                # 累积function name
+                                func_delta = tc_delta.get("function", {})
+                                if func_delta.get("name"):
+                                    tool_calls_map[idx]["function"]["name"] += func_delta["name"]
+                                
+                                # 累积function arguments
+                                if func_delta.get("arguments"):
+                                    tool_calls_map[idx]["function"]["arguments"] += func_delta["arguments"]
+                
+                # 流式结束后，如果有工具调用，yield完整的tool_calls
+                if has_tool_calls:
+                    tool_calls_list = []
+                    for idx in sorted(tool_calls_map.keys()):
+                        tool_calls_list.append(tool_calls_map[idx])
+                    _logger.info(f"[Ollama-Tools-Stream] 检测到 {len(tool_calls_list)} 个工具调用")
+                    yield {"type": "tool_calls", "tool_calls": tool_calls_list}
     
     async def _process_single_image_batch(
         self,
@@ -1450,58 +1676,65 @@ class OllamaProvider(BaseModelProvider):
             return result
         return result
 
-    async def decompose_into_categories(self, topic: str, context: dict) -> dict:
+    async def decompose_into_categories(self, topic: str, context: dict, study_depth: str = "intermediate") -> dict:
         """
         将学习主题拆分为多个类别
         
-        使用策略：
-        1. 调用模型将主题拆分为6-12个类别
-        2. 每个类别包含：id, name, description, scope（涵盖范围）
+        根据学习深度调整类别数量：
+        - basic(了解): 4-6 个类别
+        - intermediate(理解): 7-9 个类别
+        - advanced(深入): 10-12 个类别
         """
-        system_prompt = """你是知识架构师，擅长将复杂领域拆解为层次分明的知识体系。
+        # 根据学习深度确定类别数量范围
+        depth_category_config = {
+            "basic": {"min": 4, "max": 6, "desc": "4-6", "target": "了解"},
+            "intermediate": {"min": 7, "max": 9, "desc": "7-9", "target": "理解"},
+            "advanced": {"min": 10, "max": 12, "desc": "10-12", "target": "深入"}
+        }
+        category_config = depth_category_config.get(study_depth, depth_category_config["intermediate"])
+        
+        system_prompt = f"""你是知识架构师，擅长将复杂领域拆解为层次分明的知识体系。
 
 ## 你的任务
-将给定的学习主题拆分为 6-12 个互不重叠、逻辑清晰的类别/模块。
+将给定的学习主题拆分为 {category_config['desc']} 个互不重叠、逻辑清晰的类别/模块。
+
+## 学习深度要求
+本次知识图谱的学习深度为「{category_config['target']}」，请据此生成适当数量的类别。
 
 ## 输出要求
 请严格按照以下 JSON 格式输出，只输出 categories 数组，不要输出其他内容：
 
 ```json
-{
+{{
   "categories": [
-    {
+    {{
       "id": "唯一标识符（英文驼峰）",
       "name": "类别名称（简洁的中文名称）",
       "description": "该类别的简要描述（1-2句话）",
       "scope": "该类别涵盖的具体知识点范围（用中文描述）"
-    }
+    }}
   ]
-}
+}}
 ```
 
 ## 设计原则
 1. **互不重叠**：每个类别应聚焦于一个明确的子领域
 2. **覆盖全面**：涵盖主题的所有重要方面
 3. **层次清晰**：按逻辑顺序排列
-4. **数量适中**：6-12个类别最佳
-
-## 类别示例（以「人工智能」为例）
-- 机器学习基础：涵盖监督学习、无监督学习等基础概念
-- 深度学习核心：涵盖神经网络、反向传播等
-- 计算机视觉：涵盖图像处理、目标检测等
-- 自然语言处理：涵盖文本处理、语义理解等"""
+4. **数量要求**：严格生成 {category_config['desc']} 个类别"""
         
         user_prompt = f"""## 学习主题
 - 主题：{topic}
 - 学科：{context.get('subject', '')}
 - 描述：{context.get('description', '')}
+- 学习深度：{category_config['target']}
 
-请将「{topic}」拆分为多个类别。
+请将「{topic}」拆分为 {category_config['desc']} 个类别。
 
 【重要】
 1. 只生成与「{topic}」直接相关的专业类别
 2. 不要生成「通用编程」「数据结构」等与主题无关的类别
-3. 类别数量控制在 6-12 个"""
+3. 类别数量严格控制在 {category_config['desc']} 个"""
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -1529,11 +1762,11 @@ class OllamaProvider(BaseModelProvider):
         
         # 验证结果
         categories = result.get("categories", [])
-        if len(categories) < 6:
-            print(f"警告：类别数量不足({len(categories)}个)，期望6-12个")
-        if len(categories) > 12:
-            print(f"警告：类别数量过多({len(categories)}个)，将截断到12个")
-            result["categories"] = categories[:12]
+        if len(categories) < category_config["min"]:
+            print(f"警告：类别数量不足({len(categories)}个)，期望{category_config['desc']}个")
+        if len(categories) > category_config["max"]:
+            print(f"警告：类别数量过多({len(categories)}个)，将截断到{category_config['max']}个")
+            result["categories"] = categories[:category_config["max"]]
         
         return result
 
@@ -1543,14 +1776,14 @@ class OllamaProvider(BaseModelProvider):
         
         根据学习深度调整知识点数量：
         - basic(了解): 4-6 个知识点
-        - intermediate(熟悉): 8-12 个知识点
-        - advanced(深入): 13-18 个知识点
+        - intermediate(理解): 7-10 个知识点
+        - advanced(深入): 13-15 个知识点
         """
         # 根据学习深度确定知识点数量范围
         depth_config = {
-            "basic": {"min": 4, "max": 6, "target": 5, "desc": "4-6"},
-            "intermediate": {"min": 8, "max": 12, "target": 10, "desc": "8-12"},
-            "advanced": {"min": 13, "max": 18, "target": 15, "desc": "13-18"}
+            "basic": {"min": 4, "max": 6, "target": 5, "desc": "4-6", "target_name": "了解"},
+            "intermediate": {"min": 7, "max": 10, "target": 10, "desc": "7-10", "target_name": "理解"},
+            "advanced": {"min": 13, "max": 15, "target": 15, "desc": "13-15", "target_name": "深入"}
         }
         config = depth_config.get(study_depth, depth_config["intermediate"])
         
@@ -1735,7 +1968,8 @@ class CustomProvider(BaseModelProvider):
     
     def _is_ollama_endpoint(self) -> bool:
         """检查是否使用 Ollama 端点"""
-        return "ollama" in self.base_url.lower()
+        base_url_lower = self.base_url.lower()
+        return "ollama" in base_url_lower or ":11434" in base_url_lower
     
     async def chat(self, messages: list, **kwargs) -> str:
         """自定义 API 对话，支持重试机制和取消检查"""
@@ -1929,12 +2163,6 @@ class CustomProvider(BaseModelProvider):
         
         headers = self._get_headers()
         
-        # Ollama端点不支持Function Calling,降级到普通对话
-        if self._is_ollama_endpoint():
-            logger.warning("Ollama端点不支持Function Calling,使用普通对话")
-            content = await self.chat(messages)
-            return {"content": content}
-        
         # OpenAI兼容格式
         payload = {
             "model": self.model,
@@ -2010,16 +2238,6 @@ class CustomProvider(BaseModelProvider):
         _logger = logging.getLogger(__name__)
         
         headers = self._get_headers()
-        
-        # Ollama端点不支持Function Calling,降级到普通流式对话
-        if self._is_ollama_endpoint():
-            _logger.warning("Ollama端点不支持Function Calling流式,降级到普通流式对话")
-            async for chunk in self.chat_stream(messages):
-                if isinstance(chunk, str):
-                    yield {"type": "content", "content": chunk}
-                elif isinstance(chunk, dict):
-                    yield {"type": "content", "content": chunk.get("content", "")}
-            return
         
         # OpenAI兼容格式 - 流式请求
         payload = {
@@ -2119,52 +2337,65 @@ class CustomProvider(BaseModelProvider):
                     _logger.info(f"[DeepSeek-Stream] 检测到 {len(tool_calls_list)} 个工具调用")
                     yield {"type": "tool_calls", "tool_calls": tool_calls_list}
     
-    async def decompose_into_categories(self, topic: str, context: dict) -> dict:
+    async def decompose_into_categories(self, topic: str, context: dict, study_depth: str = "intermediate") -> dict:
         """
         将学习主题拆分为多个类别
         
-        使用策略：
-        1. 调用模型将主题拆分为6-12个类别
-        2. 每个类别包含：id, name, description, scope（涵盖范围）
+        根据学习深度调整类别数量：
+        - basic(了解): 4-6 个类别
+        - intermediate(理解): 7-9 个类别
+        - advanced(深入): 10-12 个类别
         """
-        system_prompt = """你是知识架构师，擅长将复杂领域拆解为层次分明的知识体系。
+        # 根据学习深度确定类别数量范围
+        depth_category_config = {
+            "basic": {"min": 4, "max": 6, "desc": "4-6", "target": "了解"},
+            "intermediate": {"min": 7, "max": 9, "desc": "7-9", "target": "理解"},
+            "advanced": {"min": 10, "max": 12, "desc": "10-12", "target": "深入"}
+        }
+        category_config = depth_category_config.get(study_depth, depth_category_config["intermediate"])
+        
+        system_prompt = f"""你是知识架构师，擅长将复杂领域拆解为层次分明的知识体系。
 
 ## 你的任务
-将给定的学习主题拆分为 6-12 个互不重叠、逻辑清晰的类别/模块。
+将给定的学习主题拆分为 {category_config['desc']} 个互不重叠、逻辑清晰的类别/模块。
+
+## 学习深度要求
+本次知识图谱的学习深度为「{category_config['target']}」，请据此生成适当数量的类别。
 
 ## 输出要求
 请严格按照以下 JSON 格式输出，只输出 categories 数组，不要输出其他内容：
 
 ```json
-{
+{{
   "categories": [
-    {
+    {{
       "id": "唯一标识符（英文驼峰）",
       "name": "类别名称（简洁的中文名称）",
       "description": "该类别的简要描述（1-2句话）",
       "scope": "该类别涵盖的具体知识点范围（用中文描述）"
-    }
+    }}
   ]
-}
+}}
 ```
 
 ## 设计原则
 1. **互不重叠**：每个类别应聚焦于一个明确的子领域
 2. **覆盖全面**：涵盖主题的所有重要方面
 3. **层次清晰**：按逻辑顺序排列
-4. **数量适中**：6-12个类别最佳"""
+4. **数量要求**：严格生成 {category_config['desc']} 个类别"""
         
         user_prompt = f"""## 学习主题
 - 主题：{topic}
 - 学科：{context.get('subject', '')}
 - 描述：{context.get('description', '')}
+- 学习深度：{category_config['target']}
 
-请将「{topic}」拆分为多个类别。
+请将「{topic}」拆分为 {category_config['desc']} 个类别。
 
 【重要】
 1. 只生成与「{topic}」直接相关的专业类别
 2. 不要生成「通用编程」「数据结构」等与主题无关的类别
-3. 类别数量控制在 6-12 个"""
+3. 类别数量严格控制在 {category_config['desc']} 个"""
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -2199,11 +2430,11 @@ class CustomProvider(BaseModelProvider):
         
         # 验证结果
         categories = result.get("categories", [])
-        if len(categories) < 6:
-            print(f"警告：类别数量不足({len(categories)}个)，期望6-12个")
-        if len(categories) > 12:
-            print(f"警告：类别数量过多({len(categories)}个)，将截断到12个")
-            result["categories"] = categories[:12]
+        if len(categories) < category_config["min"]:
+            print(f"警告：类别数量不足({len(categories)}个)，期望{category_config['desc']}个")
+        if len(categories) > category_config["max"]:
+            print(f"警告：类别数量过多({len(categories)}个)，将截断到{category_config['max']}个")
+            result["categories"] = categories[:category_config["max"]]
         
         return result
     
@@ -2213,14 +2444,14 @@ class CustomProvider(BaseModelProvider):
         
         根据学习深度调整知识点数量：
         - basic(了解): 4-6 个知识点
-        - intermediate(熟悉): 8-12 个知识点
-        - advanced(深入): 13-18 个知识点
+        - intermediate(理解): 7-10 个知识点
+        - advanced(深入): 13-15 个知识点
         """
         # 根据学习深度确定知识点数量范围
         depth_config = {
-            "basic": {"min": 4, "max": 6, "target": 5, "desc": "4-6"},
-            "intermediate": {"min": 8, "max": 12, "target": 10, "desc": "8-12"},
-            "advanced": {"min": 13, "max": 18, "target": 15, "desc": "13-18"}
+            "basic": {"min": 4, "max": 6, "target": 5, "desc": "4-6", "target_name": "了解"},
+            "intermediate": {"min": 7, "max": 10, "target": 10, "desc": "7-10", "target_name": "理解"},
+            "advanced": {"min": 13, "max": 15, "target": 15, "desc": "13-15", "target_name": "深入"}
         }
         config = depth_config.get(study_depth, depth_config["intermediate"])
         
@@ -2927,6 +3158,11 @@ class AIModelProvider:
         """
         self.provider_name = provider_name  # 保存提供商名称
         
+        # 多模态能力标志（从配置读取）
+        self.supports_vision = config.get("SUPPORTS_VISION", False)
+        self.supports_video = config.get("SUPPORTS_VIDEO", False)
+        self.supports_audio = config.get("SUPPORTS_AUDIO", False)
+        
         if provider_name == "openai":
             self.provider = OpenAIProvider(
                 api_key=config.get("OPENAI_API_KEY", ""),
@@ -3003,9 +3239,9 @@ class AIModelProvider:
         """拆解学习主题"""
         return await self.provider.decompose_topic(topic, context)
     
-    async def decompose_into_categories(self, topic: str, context: dict) -> dict:
+    async def decompose_into_categories(self, topic: str, context: dict, study_depth: str = "intermediate") -> dict:
         """将学习主题拆分为多个类别"""
-        return await self.provider.decompose_into_categories(topic, context)
+        return await self.provider.decompose_into_categories(topic, context, study_depth)
     
     async def generate_sub_graph(self, category: dict, topic: str, context: dict, study_depth: str = "intermediate") -> dict:
         """为单个类别生成子知识图谱"""
@@ -3488,7 +3724,8 @@ JSON结构：
         constraints: dict,
         graph_title: str = "",
         graph_description: str = "",
-        progress_callback=None
+        progress_callback=None,
+        study_depth: str = "intermediate"
     ) -> dict:
         """
         第一阶段：生成章节结构（仅生成章-知识点分配）
@@ -3500,10 +3737,19 @@ JSON结构：
             graph_title: 图谱标题
             graph_description: 图谱描述
             progress_callback: 进度回调函数 callback(progress: int, message: str)
+            study_depth: 学习深度 (basic/了解, intermediate/理解, advanced/深入)
 
         Returns:
             dict: 章节结构数据，包含chapters数组，每章包含knowledge_point_ids
         """
+        # 根据学习深度确定章节数量范围
+        depth_chapter_config = {
+            "basic": {"range": "4-6", "desc": "了解", "max": 6},
+            "intermediate": {"range": "7-9", "desc": "理解", "max": 9},
+            "advanced": {"range": "10-12", "desc": "深入", "max": 12}
+        }
+        chapter_config = depth_chapter_config.get(study_depth, depth_chapter_config["intermediate"])
+        
         # 构建节点列表字符串
         nodes_str = "\n".join([
             f"- [{n['id']}] {n['name']}: {n.get('description', '')} (难度:{n.get('difficulty', 'intermediate')}, 预计:{n.get('estimated_hours', 1.0)}小时)"
@@ -3524,7 +3770,9 @@ JSON结构：
             total_nodes=len(nodes),
             all_nodes=nodes_str,
             edges_info=edges_str if edges_str else "（无明确依赖关系，请根据知识点自然顺序组织）",
-            max_chapters=constraints.get("max_chapters", 14)
+            study_depth=chapter_config["desc"],
+            chapter_range=chapter_config["range"],
+            max_chapters=chapter_config["max"]
         )
 
         messages = [

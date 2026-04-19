@@ -3,9 +3,35 @@
 """
 import os
 import base64
+import re
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
 import io
+
+
+def clean_text_for_utf8(text: str) -> str:
+    """
+    清理文本中的 surrogate 字符，确保可以安全编码为 UTF-8
+    
+    PDF 提取的文本可能包含数学符号等字符的 incomplete surrogate pair，
+    这些字符在 JSON 序列化/UTF-8 编码时会报错。此函数移除或替换这些字符。
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        清理后的文本
+    """
+    if not text:
+        return text
+    
+    # 方法1：使用 surrogateescape 处理，然后替换为 �
+    # 这会保留所有可编码字符，将 surrogate 替换为替换字符
+    try:
+        return text.encode('utf-8', errors='surrogateescape').decode('utf-8', errors='replace')
+    except Exception:
+        # 兜底：直接移除 surrogate 范围的字符 (U+D800-U+DFFF)
+        return re.sub(r'[\ud800-\udfff]', '', text)
 
 # PDF处理
 try:
@@ -155,7 +181,7 @@ class DocumentProcessor:
             file_path: PDF文件路径
             
         Returns:
-            提取的文字内容
+            提取的文字内容（已清理 surrogate 字符）
         """
         if not HAS_PDF_SUPPORT:
             return ""
@@ -180,7 +206,9 @@ class DocumentProcessor:
             except Exception as e2:
                 print(f"PyPDF2提取也失败: {e2}")
         
-        return "\n\n".join(text_parts)
+        raw_text = "\n\n".join(text_parts)
+        # 清理 surrogate 字符，确保可以安全编码为 UTF-8
+        return clean_text_for_utf8(raw_text)
     
     def _is_scanned_pdf(self, text: str, file_path: str, min_text_length: int = 100) -> bool:
         """
@@ -422,7 +450,7 @@ class DocumentProcessor:
                     if cell.text.strip():
                         paragraphs.append(cell.text)
         
-        result["text"] = "\n\n".join(paragraphs)
+        result["text"] = clean_text_for_utf8("\n\n".join(paragraphs))
         
         # 统计段落数作为页数估计
         result["page_count"] = max(1, len(paragraphs) // 30)
@@ -467,7 +495,7 @@ class DocumentProcessor:
             if slide_text:
                 slide_texts.append(f"=== 第{i+1}页 ===\n" + "\n".join(slide_text))
         
-        result["text"] = "\n\n".join(slide_texts)
+        result["text"] = clean_text_for_utf8("\n\n".join(slide_texts))
         
         return result
     
@@ -517,7 +545,7 @@ class DocumentProcessor:
         }
         
         with open(file_path, 'r', encoding='utf-8') as f:
-            result["text"] = f.read()
+            result["text"] = clean_text_for_utf8(f.read())
         
         return result
     

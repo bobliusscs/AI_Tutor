@@ -66,6 +66,8 @@ class SimpleAgent:
         history: list = None,
         images: list = None,
         documents: list = None,
+        videos: list = None,
+        audios: list = None,
         current_goal: dict = None,
         cancel_event=None,
     ) -> AsyncGenerator[dict, None]:
@@ -80,7 +82,7 @@ class SimpleAgent:
             learning_context = self._load_learning_context(current_goal)
 
             # 构建消息列表
-            messages = self._build_messages(message, history, learning_context)
+            messages = self._build_messages(message, history, learning_context, images, documents, videos, audios)
 
             # 调试：打印完整消息和原始history
             logger.info(f"[Agent] 原始history数量: {len(history) if history else 0}")
@@ -102,6 +104,7 @@ class SimpleAgent:
 
             # ReAct循环 - 流式输出
             full_response = ""
+            failed_tool_names = set()  # 记录已失败的工具，防止重复调用
             
             for round_idx in range(self.max_tool_rounds):
                 # 检查取消
@@ -109,11 +112,19 @@ class SimpleAgent:
                     yield {"type": "error", "message": "请求已取消"}
                     return
                 
+                # 过滤已失败的工具，防止LLM重复调用同一失败工具
+                available_tools = [t for t in tools if t.get("function", {}).get("name") not in failed_tool_names] if failed_tool_names else tools
+                
+                # 如果所有工具都已失败，强制不带工具调用，让LLM直接回复
+                if not available_tools and tools:
+                    logger.info(f"[Agent] 所有工具都已失败，降级为纯文本回复")
+                    available_tools = []
+                
                 # 流式调用LLM(带工具定义)
                 tool_calls_detected = []
                 round_content = ""
                 
-                async for event in self._call_llm_with_tools_stream(messages, tools, cancel_event):
+                async for event in self._call_llm_with_tools_stream(messages, available_tools, cancel_event):
                     if event["type"] == "content":
                         round_content += event["content"]
                         # 实时发送内容给前端
@@ -146,6 +157,15 @@ class SimpleAgent:
                         logger.info(f"[Agent] 执行工具: {tool_name}")
                         result = await self.orchestrator.execute_tool(tool_name, arguments)
                         tool_results.append(result)
+                        
+                        # 记录失败的工具
+                        try:
+                            result_data = json.loads(result) if isinstance(result, str) else result
+                            if isinstance(result_data, dict) and not result_data.get("success"):
+                                failed_tool_names.add(tool_name)
+                                logger.info(f"[Agent] 工具 {tool_name} 返回失败，已加入失败列表")
+                        except:
+                            pass
                         
                         # 将工具调用结果通过SSE发送给前端
                         yield {
@@ -194,6 +214,14 @@ class SimpleAgent:
                                     "summary": result_data.get("summary", ""),
                                     "progress": result_data.get("progress", {}),
                                     "note": "完整习题数据已发送给前端展示，请简要说明题目数量和难度分布，鼓励学生完成练习，不要重复题目内容或泄露答案"
+                                }, ensure_ascii=False)
+                            elif not result_data.get("success"):
+                                # 工具调用失败时，为LLM提供明确的引导说明
+                                error_msg = result_data.get("error", "未知错误")
+                                tool_result_for_llm = json.dumps({
+                                    "success": False,
+                                    "error": error_msg,
+                                    "note": "工具调用失败，请直接用文字告知用户失败原因，不要重复调用该工具，不要尝试其他工具。如果是课件未生成，请提示用户先去生成课件。如果是习题未生成，请提示用户先去生成习题。"
                                 }, ensure_ascii=False)
                         except:
                             pass
@@ -296,7 +324,7 @@ class SimpleAgent:
 
         return context
 
-    def _build_messages(self, message: str, history: list = None, learning_context: dict = None) -> list:
+    def _build_messages(self, message: str, history: list = None, learning_context: dict = None, images: list = None, documents: list = None, videos: list = None, audios: list = None) -> list:
         """构建消息列表"""
         system_prompt = self._build_system_prompt(learning_context)
         
@@ -369,8 +397,9 @@ class SimpleAgent:
                 
                 messages.append({"role": role, "content": content})
 
-        # 添加当前消息
-        messages.append({"role": "user", "content": message})
+        # 添加当前消息（支持图片、文档、视频、音频附件）
+        user_content = self._build_user_content(message, images, documents, videos, audios)
+        messages.append({"role": "user", "content": user_content})
 
         return messages
 
@@ -424,6 +453,371 @@ class SimpleAgent:
                 return str(tool_result)[:200]
         except:
             return str(tool_result)[:200]
+
+    def _build_user_content(self, message: str, images: list = None, documents: list = None, videos: list = None, audios: list = None):
+        """
+        构建用户消息内容（支持图片、文档、视频、音频附件）
+        
+        基于 OpenAI 多模态 API 格式：
+        - 图片: {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+        
+        注意：Ollama 的 /v1/chat/completions 端点仅支持 text 和 image_url 类型，
+        不支持 video_url 和 input_audio。视频需要通过帧提取转为图片处理。
+        
+        根据模型的多模态能力过滤：
+        - 不支持视觉的模型：图片被忽略
+        - 不支持视频的模型：视频会被后端提取为图片帧处理
+        - 不支持音频的模型：音频被忽略
+        - 文档始终以文本形式注入
+        """
+        has_images = images and len(images) > 0
+        has_documents = documents and len(documents) > 0
+        has_videos = videos and len(videos) > 0
+        has_audios = audios and len(audios) > 0
+        
+        # 获取模型多模态能力
+        supports_vision = getattr(self.ai_provider, 'supports_vision', False)
+        supports_video = getattr(self.ai_provider, 'supports_video', False)
+        supports_audio = getattr(self.ai_provider, 'supports_audio', False)
+        
+        # 后端视频帧提取：当模型不支持视频但收到视频数据时，提取帧转为图片
+        extracted_frames = []
+        if has_videos and not supports_video:
+            logger.info(f"[Agent] 模型不支持视频，对 {len(videos)} 个视频进行后端帧提取")
+            for video_b64 in videos:
+                frames = self._extract_video_frames(video_b64)
+                if frames:
+                    extracted_frames.extend(frames)
+            if extracted_frames:
+                logger.info(f"[Agent] 视频帧提取完成，共 {len(extracted_frames)} 帧")
+                # 将提取的帧合并到 images 列表
+                if images is None:
+                    images = []
+                images.extend(extracted_frames)
+                has_images = True
+            has_videos = False  # 重置视频标记，因为已转为图片处理
+        
+        # 过滤掉模型不支持的多模态数据
+        if not supports_vision:
+            if has_images:
+                logger.info(f"[Agent] 模型不支持视觉，忽略 {len(images)} 张图片")
+            has_images = False
+        if not supports_video:
+            # 视频已在上面的逻辑中处理（提取为帧），此处忽略剩余的视频数据
+            if has_videos:
+                logger.info(f"[Agent] 模型不支持视频，忽略 {len(videos)} 个视频")
+            has_videos = False
+        if not supports_audio:
+            if has_audios:
+                logger.info(f"[Agent] 模型不支持音频，忽略 {len(audios)} 个音频")
+            has_audios = False
+        
+        if not has_images and not has_documents and not has_videos and not has_audios:
+            # 纯文本消息
+            return message
+        
+        # 多模态消息：使用 content 数组格式
+        content_parts = []
+        
+        # 文本部分
+        text_parts = [message] if message else []
+        
+        # 如果有从视频提取的帧，添加视频上下文提示词
+        if extracted_frames:
+            video_context = f"\n[视频上下文] 以下 {len(extracted_frames)} 张图片是从用户上传的视频中按1秒1帧提取的关键帧，请综合分析视频内容。"
+            text_parts.append(video_context)
+        
+        # 文档部分：将文档内容转为文本描述
+        if has_documents:
+            import base64
+            for doc in documents:
+                doc_name = doc.get("name", "\u672a\u547d\u540d\u6587\u6863")
+                doc_type = doc.get("type", "txt")
+                doc_data = doc.get("data", "")
+                
+                if doc_type == "pdf" and doc_data:
+                    try:
+                        import io
+                        pdf_bytes = base64.b64decode(doc_data)
+                        text_content = self._extract_pdf_text(pdf_bytes)
+                        if text_content:
+                            text_parts.append(f"\n--- \u6587\u6863: {doc_name} ---\n{text_content}")
+                        else:
+                            text_parts.append(f"\n[\u9644\u4ef6: {doc_name} (PDF\uff0c\u65e0\u6cd5\u63d0\u53d6\u6587\u672c)]")
+                    except Exception as e:
+                        logger.warning(f"\u63d0\u53d6PDF\u6587\u672c\u5931\u8d25: {e}")
+                        text_parts.append(f"\n[\u9644\u4ef6: {doc_name} (PDF\uff0c\u63d0\u53d6\u5931\u8d25)]")
+                elif doc_type in ("docx", "doc") and doc_data:
+                    try:
+                        doc_bytes = base64.b64decode(doc_data)
+                        text_content = self._extract_docx_text(doc_bytes)
+                        if text_content:
+                            text_parts.append(f"\n--- \u6587\u6863: {doc_name} ---\n{text_content}")
+                        else:
+                            text_parts.append(f"\n[\u9644\u4ef6: {doc_name} (Word\uff0c\u65e0\u6cd5\u63d0\u53d6\u6587\u672c)]")
+                    except Exception as e:
+                        logger.warning(f"\u63d0\u53d6Word\u6587\u672c\u5931\u8d25: {e}")
+                        text_parts.append(f"\n[\u9644\u4ef6: {doc_name} (Word\uff0c\u63d0\u53d6\u5931\u8d25)]")
+                elif doc_type in ("txt", "csv") and doc_data:
+                    try:
+                        text_content = base64.b64decode(doc_data).decode("utf-8", errors="replace")
+                        text_parts.append(f"\n--- \u6587\u6863: {doc_name} ---\n{text_content}")
+                    except Exception as e:
+                        logger.warning(f"\u89e3\u7801\u6587\u672c\u6587\u4ef6\u5931\u8d25: {e}")
+                        text_parts.append(f"\n[\u9644\u4ef6: {doc_name} ({doc_type}\uff0c\u89e3\u7801\u5931\u8d25)]")
+                elif doc_type == "xlsx" and doc_data:
+                    text_parts.append(f"\n[\u9644\u4ef6: {doc_name} (Excel\u8868\u683c\uff0c\u6682\u4e0d\u652f\u6301\u5185\u5bb9\u63d0\u53d6)]")
+                else:
+                    text_parts.append(f"\n[\u9644\u4ef6: {doc_name} ({doc_type})]")
+        
+        # \u6587\u672c\u5185\u5bb9
+        full_text = "\n".join(text_parts)
+        content_parts.append({"type": "text", "text": full_text})
+        
+        # \u56fe\u7247\u90e8\u5206
+        if has_images:
+            for img_b64 in images:
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img_b64}"
+                    }
+                })
+        
+        return content_parts
+        
+    def _extract_video_frames(self, video_b64: str, max_frames: int = 30, fps: int = 1) -> list:
+        """
+        从 base64 编码的视频中提取帧
+            
+        策略：按指定 FPS 采样，最多提取 max_frames 帧
+        帧数 = min(ceil(video_duration * fps), max_frames)
+            
+        Args:
+            video_b64: base64 编码的视频数据
+            max_frames: 最大提取帧数，默认30
+            fps: 每秒提取帧数，默认1
+                
+        Returns:
+            list: base64 编码的图片帧列表
+        """
+        import base64
+        import tempfile
+        import os
+            
+        frames = []
+        temp_video_path = None
+            
+        try:
+            # 解码 base64 视频数据
+            video_bytes = base64.b64decode(video_b64)
+                
+            # 保存到临时文件
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+                tmp.write(video_bytes)
+                temp_video_path = tmp.name
+                
+            # 尝试使用 cv2 提取帧
+            try:
+                import cv2
+                frames = self._extract_frames_with_cv2(temp_video_path, max_frames, fps)
+            except ImportError:
+                logger.warning("[Agent] cv2 未安装，尝试使用 ffmpeg 提取视频帧")
+                frames = self._extract_frames_with_ffmpeg(temp_video_path, max_frames, fps)
+                    
+        except Exception as e:
+            logger.error(f"[Agent] 视频帧提取失败: {e}")
+        finally:
+            # 清理临时文件
+            if temp_video_path and os.path.exists(temp_video_path):
+                try:
+                    os.remove(temp_video_path)
+                except:
+                    pass
+            
+        return frames
+        
+    def _extract_frames_with_cv2(self, video_path: str, max_frames: int = 30, fps: int = 1) -> list:
+        """使用 OpenCV 提取视频帧"""
+        import cv2
+        import base64
+            
+        frames = []
+        cap = cv2.VideoCapture(video_path)
+            
+        if not cap.isOpened():
+            logger.error("[Agent] 无法打开视频文件")
+            return frames
+            
+        # 获取视频信息
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_frames / video_fps if video_fps > 0 else 0
+            
+        # 计算提取间隔（按秒）
+        interval_seconds = 1.0 / fps
+            
+        # 计算需要提取的帧数
+        num_frames = min(int(duration * fps) + 1, max_frames)
+            
+        logger.info(f"[Agent] 视频信息: 时长={duration:.1f}s, FPS={video_fps:.1f}, 将提取 {num_frames} 帧")
+            
+        for i in range(num_frames):
+            # 计算目标时间（秒）
+            target_time = i * interval_seconds
+            frame_position = int(target_time * video_fps)
+                
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_position)
+            ret, frame = cap.read()
+                
+            if not ret:
+                break
+                
+            # 编码为 JPEG
+            ret, buffer = cv2.imencode('.jpg', frame)
+            if ret:
+                frame_b64 = base64.b64encode(buffer).decode('utf-8')
+                frames.append(frame_b64)
+            
+        cap.release()
+        logger.info(f"[Agent] cv2 成功提取 {len(frames)} 帧")
+        return frames
+        
+    def _extract_frames_with_ffmpeg(self, video_path: str, max_frames: int = 30, fps: int = 1) -> list:
+        """使用 ffmpeg 命令行提取视频帧"""
+        import subprocess
+        import base64
+        import tempfile
+        import os
+            
+        frames = []
+        temp_dir = tempfile.mkdtemp()
+            
+        try:
+            # 使用 ffmpeg 提取帧
+            # -vf "fps=1" 表示每秒提取1帧
+            # -frames:v 30 表示最多提取30帧
+            output_pattern = os.path.join(temp_dir, 'frame_%03d.jpg')
+                
+            cmd = [
+                'ffmpeg',
+                '-i', video_path,
+                '-vf', f'fps={fps}',
+                '-frames:v', str(max_frames),
+                '-q:v', '2',  # 图片质量
+                output_pattern
+            ]
+                
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+                
+            if result.returncode != 0:
+                logger.error(f"[Agent] ffmpeg 执行失败: {result.stderr}")
+                return frames
+                
+            # 读取提取的帧
+            frame_files = sorted([f for f in os.listdir(temp_dir) if f.startswith('frame_') and f.endswith('.jpg')])
+                
+            for frame_file in frame_files:
+                frame_path = os.path.join(temp_dir, frame_file)
+                with open(frame_path, 'rb') as f:
+                    frame_b64 = base64.b64encode(f.read()).decode('utf-8')
+                    frames.append(frame_b64)
+                
+            logger.info(f"[Agent] ffmpeg 成功提取 {len(frames)} 帧")
+                
+        except subprocess.TimeoutExpired:
+            logger.error("[Agent] ffmpeg 执行超时")
+        except Exception as e:
+            logger.error(f"[Agent] ffmpeg 提取帧失败: {e}")
+        finally:
+            # 清理临时目录
+            for f in os.listdir(temp_dir):
+                try:
+                    os.remove(os.path.join(temp_dir, f))
+                except:
+                    pass
+            try:
+                os.rmdir(temp_dir)
+            except:
+                pass
+            
+        return frames
+    
+    def _extract_pdf_text(self, pdf_bytes: bytes) -> str:
+        """从 PDF 字节中提取文本（已清理 surrogate 字符）"""
+        import re
+        
+        def clean_text_for_utf8(text: str) -> str:
+            """清理文本中的 surrogate 字符"""
+            if not text:
+                return text
+            try:
+                return text.encode('utf-8', errors='surrogateescape').decode('utf-8', errors='replace')
+            except Exception:
+                return re.sub(r'[\ud800-\udfff]', '', text)
+        
+        try:
+            import io
+            from PyPDF2 import PdfReader
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            texts = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    texts.append(text)
+            raw_text = "\n".join(texts)
+            return clean_text_for_utf8(raw_text)
+        except ImportError:
+            # 尝试 pdfplumber
+            try:
+                import io
+                import pdfplumber
+                texts = []
+                with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                    for page in pdf.pages:
+                        text = page.extract_text()
+                        if text:
+                            texts.append(text)
+                raw_text = "\n".join(texts)
+                return clean_text_for_utf8(raw_text)
+            except ImportError:
+                logger.warning("未安装 PyPDF2 或 pdfplumber，无法提取 PDF 文本")
+                return ""
+        except Exception as e:
+            logger.warning(f"提取 PDF 文本失败: {e}")
+            return ""
+    
+    def _extract_docx_text(self, doc_bytes: bytes) -> str:
+        """从 Word 文档字节中提取文本（已清理 surrogate 字符）"""
+        import re
+        
+        def clean_text_for_utf8(text: str) -> str:
+            """清理文本中的 surrogate 字符"""
+            if not text:
+                return text
+            try:
+                return text.encode('utf-8', errors='surrogateescape').decode('utf-8', errors='replace')
+            except Exception:
+                return re.sub(r'[\ud800-\udfff]', '', text)
+        
+        try:
+            import io
+            from docx import Document
+            doc = Document(io.BytesIO(doc_bytes))
+            texts = [para.text for para in doc.paragraphs if para.text.strip()]
+            raw_text = "\n".join(texts)
+            return clean_text_for_utf8(raw_text)
+        except ImportError:
+            logger.warning("未安装 python-docx，无法提取 Word 文本")
+            return ""
+        except Exception as e:
+            logger.warning(f"提取 Word 文本失败: {e}")
+            return ""
 
     def _build_system_prompt(self, learning_context: dict = None) -> str:
         """构建系统提示词 - 从SYSTEM.md加载并替换动态部分"""
