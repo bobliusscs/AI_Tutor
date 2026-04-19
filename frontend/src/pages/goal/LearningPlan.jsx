@@ -1016,49 +1016,13 @@ function LearningPlan() {
       // 关闭进度弹窗
       setShowTTSProgressModal(false)
 
-      // 如果已取消，不显示成功弹窗
+      // 如果已取消，不显示成功提示
       if (ttsCancelledRef.current) {
         return
       }
 
-      // 先刷新数据，再显示完成弹窗
+      // 刷新数据
       await fetchData()
-
-      // 读取最终统计
-      setTtsProgressInfo(prev => {
-        // 显示最终结果
-        Modal.confirm({
-          title: '语音合成完成',
-          content: (
-            <div>
-              <div style={{ marginBottom: 12 }}>语音合成完成！</div>
-              <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
-                <div style={{ flex: 1, padding: 12, background: '#f6ffed', borderRadius: 8, textAlign: 'center' }}>
-                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#52c41a' }}>{prev.success}</div>
-                  <div style={{ fontSize: 13, color: '#666' }}>成功</div>
-                </div>
-                <div style={{ flex: 1, padding: 12, background: '#fff7e6', borderRadius: 8, textAlign: 'center' }}>
-                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#faad14' }}>{prev.skipped}</div>
-                  <div style={{ fontSize: 13, color: '#666' }}>跳过</div>
-                </div>
-                <div style={{ flex: 1, padding: 12, background: '#fff1f0', borderRadius: 8, textAlign: 'center' }}>
-                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#ff4d4f' }}>{prev.failed}</div>
-                  <div style={{ fontSize: 13, color: '#666' }}>失败</div>
-                </div>
-              </div>
-            </div>
-          ),
-          okText: '立即学习',
-          cancelText: '关闭',
-          onOk: () => {
-            handleLearnPPT(sectionId, sectionTitle)
-          },
-          onCancel: () => {
-            fetchData()
-          }
-        })
-        return prev // 不修改状态
-      })
     } catch (error) {
       setShowTTSProgressModal(false)
       
