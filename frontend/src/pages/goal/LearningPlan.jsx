@@ -1023,6 +1023,9 @@ function LearningPlan() {
 
       // 刷新数据
       await fetchData()
+
+      // 显示完成提示
+      message.success('语音合成完成', 2)
     } catch (error) {
       setShowTTSProgressModal(false)
       
