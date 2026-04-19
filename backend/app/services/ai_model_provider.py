@@ -4206,21 +4206,34 @@ JSON结构：
             )
             slides_prompts.append(prompt)
         
-        # 构建批次提示词
-        batch_prompt = f"""请为以下{len(slides_plan)}页PPT生成完整内容，每页的content必须是对应类型的JSON对象（不是纯文本字符串）：
+        # 构建批次提示词（简化格式说明，避免嵌套JSON导致解析错误）
+        batch_prompt = f"""请为以下{len(slides_plan)}页PPT生成完整内容。
 
 {chr(10).join([f'第{idx+1}页：{prompt}' for idx, prompt in enumerate(slides_prompts)])}
 
-请严格按照以下JSON格式返回所有页面的内容（返回包含{len(slides_plan)}个对象的数组）：
-```json
-[
-  {{"index": {slides_plan[0].get("index", 0)}, "type": "{slides_plan[0].get("type", "content")}", "layout": "{slides_plan[0].get("layout", "focus")}", "title": "页面标题", "content": {{...}}, "notes": "讲解稿"}},
-  {{"index": {slides_plan[1].get("index", 1) if len(slides_plan) > 1 else 1}, "type": "{slides_plan[1].get("type", "content") if len(slides_plan) > 1 else "content"}", "layout": "{slides_plan[1].get("layout", "focus") if len(slides_plan) > 1 else "focus"}", "title": "页面标题", "content": {{...}}, "notes": "讲解稿"}}{"," if len(slides_plan) > 2 else ""}
-  {{"index": {slides_plan[2].get("index", 2) if len(slides_plan) > 2 else 2}, "type": "{slides_plan[2].get("type", "content") if len(slides_plan) > 2 else "content"}", "layout": "{slides_plan[2].get("layout", "focus") if len(slides_plan) > 2 else "focus"}", "title": "页面标题", "content": {{...}}, "notes": "讲解稿"}}
-]
-```
+请按以下格式返回JSON数组（不要包含```标记）：
+[{"index":0,"type":"类型","title":"标题","content":CONTENT_JSON,"notes":"讲解稿"},...]
 
-重要提醒：content字段必须是JSON对象，不能是纯文本字符串！"""
+【各类型content格式】：
+
+★ exercise类型（练习）- 必须包含questions数组：
+content应该是: {"questions":[{"type":"choice","question":"题干","options":["A.","B.","C.","D."],"answer":"答案","analysis":"解析"}]}
+
+★ 其他类型：
+cover: {"title":"标题","subtitle":"副标题"}
+intro: {"scene":"场景","question":"问题"}
+concept: {"definition":"定义","key_attributes":[{"label":"属性","value":"值"}]}
+content: {"main_idea":"核心","points":[{"title":"要点","detail":"说明"}]}
+comparison: {"items":[{"name":"名称","features":["特点"],"example":"示例"}],"key_difference":"区别"}
+example: {"case_title":"案例","background":"背景","steps":[{"label":"步骤","content":"内容"}]}
+summary: {"key_takeaways":[{"point":"要点","keyword":"关键词"}]}
+ending: {"message":"寄语","next_topic":"预告"}
+
+【要求】：
+1. content必须是JSON对象，不是字符串
+2. exercise类型必须有questions数组，包含2-4道题
+3. 抽象练习需转换为具体练习题
+4. 直接输出JSON，不要```标记"""
 
         if prev_summary:
             batch_prompt += f"\n\n【前面页面参考】\n{prev_summary}"
@@ -4229,8 +4242,8 @@ JSON结构：
             "你是一位专业的教学课件设计师。请根据页面规划，生成每页的完整结构化内容。\n\n重要规则：\n"
             "1. content字段必须是JSON对象而非纯文本字符串\n"
             "2. 严格按照各幻灯片类型对应的格式输出\n"
-            "3. exercise类型的content使用简单文本格式，包含题目和答案，用 | 分隔\n"
-            "4. 其他类型按原有JSON格式输出\n"
+            "3. exercise类型的content必须包含questions数组，每道题包含type、question、answer、analysis字段\n"
+            "4. 当key_points是抽象活动（如'格局描述、功能判断'）时，将每个抽象活动转换为对应类型的练习题\n"
             "5. 所有文字必须简洁，避免冗长描述"
         )
         messages = [
@@ -4318,17 +4331,41 @@ JSON结构：
             slide_title = slide_plan.get("title", "")
             key_points = slide_plan.get("key_points", [])
             
-            # 为exercise类型生成简单的默认文本
+            # 为exercise类型生成结构化的默认questions
             if slide_type == "exercise":
-                default_text = "练习题内容"
+                default_questions = []
                 for idx, kp in enumerate(key_points[:3]):
-                    default_text += f"|{kp}相关练习题{idx + 1}|答案"
+                    # 根据key_points的类型生成不同的问题
+                    if "判断" in kp or "选择" in kp:
+                        default_questions.append({
+                            "type": "choice",
+                            "question": f"关于{slide_title}的练习题{idx + 1}",
+                            "options": ["A. 选项1", "B. 选项2", "C. 选项3", "D. 选项4"],
+                            "answer": "A",
+                            "analysis": "请参考相关知识点"
+                        })
+                    elif "填空" in kp:
+                        default_questions.append({
+                            "type": "blank",
+                            "question": f"请填写：{kp}",
+                            "answer": "答案",
+                            "analysis": "请参考相关知识点"
+                        })
+                    else:
+                        default_questions.append({
+                            "type": "choice",
+                            "question": f"{kp}（练习题{idx + 1}）",
+                            "options": ["A. 正确", "B. 错误", "C. 不确定", "D. 以上都不对"],
+                            "answer": "A",
+                            "analysis": "请参考相关知识点"
+                        })
+                
                 default_slides.append({
                     "index": slide_plan.get("index", 0),
                     "type": slide_type,
                     "title": slide_title,
-                    "content": {"text": default_text, "format": "题目|答案"},
-                    "notes": f"请完成{slide_title}的练习"
+                    "content": {"questions": default_questions} if default_questions else {"questions": []},
+                    "notes": ""
                 })
             else:
                 # 其他类型保持原有格式

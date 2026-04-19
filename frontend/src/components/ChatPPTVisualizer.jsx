@@ -475,13 +475,40 @@ function ExerciseSlideRenderer({ data, questions }) {
     return String(opt)
   }
 
+  // 兼容新旧格式
+  // 新格式：data.text 是用 | 分隔的文本，如 "题目1|答案1|题目2|答案2"
+  // 旧格式：data.questions 或 questions 是结构化数组
+  let parsedQuestions = []
+  
+  if (questions && questions.length > 0) {
+    // 旧格式：直接使用questions数组
+    parsedQuestions = questions
+  } else if (data?.questions && data.questions.length > 0) {
+    // 旧格式：从data.questions获取
+    parsedQuestions = data.questions
+  } else if (data?.text && typeof data.text === 'string') {
+    // 新格式：解析 | 分隔的文本
+    const parts = data.text.split('|').filter(p => p.trim())
+    for (let i = 0; i < parts.length; i += 2) {
+      if (parts[i]) {
+        const questionText = parts[i].trim()
+        const answerText = parts[i + 1]?.trim() || ''
+        parsedQuestions.push({
+          question: questionText,
+          answer: answerText,
+          options: []
+        })
+      }
+    }
+  }
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '18px 36px', position: 'relative' }}>
       {/* 背景装饰 */}
       <div style={{ position: 'absolute', top: -15, right: -15, width: 100, height: 100, borderRadius: '50%', background: 'linear-gradient(135deg, #FEE2E2, #FECACA)', opacity: 0.3 }} />
       
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {questions && questions.length > 0 ? questions.map((q, idx) => (
+        {parsedQuestions.length > 0 ? parsedQuestions.map((q, idx) => (
           <div key={idx} style={{ background: '#fff', borderRadius: 16, padding: '16px 20px', border: '1px solid #E2E8F0', boxShadow: '0 4px 16px rgba(0,0,0,0.04)', position: 'relative', overflow: 'hidden' }}>
             <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: `linear-gradient(90deg, ${['#EF4444', '#F59E0B', '#10B981'][idx % 3]}, ${['#EF4444', '#F59E0B', '#10B981'][idx % 3]}60)` }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
@@ -490,7 +517,7 @@ function ExerciseSlideRenderer({ data, questions }) {
               </span>
               <span style={{ fontWeight: 600, fontSize: 15, color: '#1E293B', flex: 1 }}>{getQuestionText(q)}</span>
             </div>
-            {q.options && (
+            {q.options && q.options.length > 0 ? (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, paddingLeft: 38 }}>
                 {q.options.map((opt, oi) => (
                   <div key={oi} style={{ padding: '10px 14px', background: 'linear-gradient(135deg, #F8FAFC, #F1F5F9)', borderRadius: 10, border: '1px solid #E2E8F0', fontSize: 13, color: '#475569', fontWeight: 500 }}>
@@ -499,7 +526,11 @@ function ExerciseSlideRenderer({ data, questions }) {
                   </div>
                 ))}
               </div>
-            )}
+            ) : q.answer ? (
+              <div style={{ paddingLeft: 38, fontSize: 12, color: '#10B981' }}>
+                答案提示：{q.answer}
+              </div>
+            ) : null}
           </div>
         )) : (
           <div style={{ textAlign: 'center', color: '#94A3B8', padding: 40 }}>
