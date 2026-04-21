@@ -1,0 +1,20 @@
+# MindGuide Project
+# Ignore Qoder config
+.qoder/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Screenshots and temp files
+*.png
+*.tmp
+*.temp
+*.bak
