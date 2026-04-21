@@ -113,6 +113,11 @@ function SkillManagement() {
                 专项
               </Tag>
             )}
+            {skill.category === 'learning' && (
+              <Tag color="geekblue" style={{ fontSize: 11 }}>
+                学习
+              </Tag>
+            )}
             {skill.category === 'core' && (
               <Tag color="purple" style={{ fontSize: 11 }}>
                 核心
@@ -183,6 +188,11 @@ function SkillManagement() {
             {skill.category === 'subject' && (
               <Tag color="cyan" style={{ fontSize: 11 }}>
                 专项
+              </Tag>
+            )}
+            {skill.category === 'learning' && (
+              <Tag color="geekblue" style={{ fontSize: 11 }}>
+                学习
               </Tag>
             )}
             {skill.builtin && (
@@ -323,8 +333,8 @@ function SkillManagement() {
               <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.7 }}>
                 <strong>Skill 说明</strong>
                 <ul style={{ margin: '8px 0 0 0', paddingLeft: 18 }}>
-                  <li>核心Skill（学习交互、学习计划等）为系统内置功能，无法卸载</li>
-                  <li>专项Skill（数学、英语等）为扩展模块，可按需安装</li>
+                  <li>核心Skill（课件交付、习题交付）为系统内置功能，无法卸载</li>
+                  <li>学习Skill（学习交互、学习计划等）和专项Skill（数学、英语等）为扩展模块，可按需安装和卸载</li>
                   <li>安装/卸载Skill后，新会话将自动使用更新后的Skill配置</li>
                 </ul>
               </div>

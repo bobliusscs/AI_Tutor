@@ -14,49 +14,65 @@ class SkillService:
     # Skills目录相对于项目根目录
     SKILLS_DIR = ".agents/skills"
 
-    # 内置Skill定义（不可卸载）
+    # 内置Skill定义（不可卸载）- 仅课件交付与习题交付为核心交付Skill
     BUILTIN_SKILLS = [
-        "aitutor-learning",
-        "aitutor-plan",
-        "aitutor-question",
-        "aitutor-study-goal",
+        "lesson-ppt-delivery",
+        "section-exercise-delivery",
     ]
 
     # 预设Skill库（可安装的Skill）
     SKILL_PRESETS: List[Dict[str, Any]] = [
+        # 内置核心Skill（不可卸载）
+        {
+            "id": "lesson-ppt-delivery",
+            "name": "课件交付",
+            "description": "获取课件内容并展示到前端，支持按章节和课时定位课件",
+            "category": "core",
+            "version": "3.1.0",
+            "builtin": True,
+        },
+        {
+            "id": "section-exercise-delivery",
+            "name": "习题交付",
+            "description": "获取自适应难度习题并展示到前端，支持按章节定位习题",
+            "category": "core",
+            "version": "2.1.0",
+            "builtin": True,
+        },
+        # 可安装可卸载的扩展Skill
         {
             "id": "aitutor-learning",
             "name": "学习交互",
             "description": "保存长期记忆并结合进度数据提供个性化学习引导",
-            "category": "core",
+            "category": "learning",
             "version": "1.0",
-            "builtin": True,
+            "builtin": False,
         },
         {
             "id": "aitutor-plan",
             "name": "学习计划",
             "description": "管理和展示学习计划的章-节-课时结构，包含课时内容获取功能",
-            "category": "core",
+            "category": "learning",
             "version": "1.0",
-            "builtin": True,
+            "builtin": False,
         },
         {
             "id": "aitutor-question",
             "name": "题库问答",
             "description": "从题库获取题目，支持按知识点和难度筛选，包含出题和评估功能",
-            "category": "core",
+            "category": "learning",
             "version": "1.0",
-            "builtin": True,
+            "builtin": False,
         },
         {
             "id": "aitutor-study-goal",
             "name": "学习目标",
             "description": "管理学习目标，支持创建、查询和更新学习目标",
-            "category": "core",
+            "category": "learning",
             "version": "1.0",
-            "builtin": True,
+            "builtin": False,
         },
-        # 扩展Skill
+        # 学科专项Skill
         {
             "id": "aitutor-math",
             "name": "数学专项",

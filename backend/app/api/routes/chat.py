@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
+import asyncio
 import json
 import logging
 
@@ -35,6 +36,7 @@ class ChatRequest(BaseModel):
     videos: Optional[List[str]] = None  # base64 编码的视频列表
     audios: Optional[List[str]] = None  # base64 编码的音频列表
     goal_id: Optional[int] = None  # 当前学习目标ID
+    tts_enabled: Optional[bool] = False  # 是否启用流式TTS
 
 
 @router.get("/welcome")
@@ -142,10 +144,11 @@ async def chat_message_stream(
     async def event_generator():
         try:
             print(f"[DEBUG] Chat request: message='{request.message[:30]}...', images={len(request.images) if request.images else 0}, documents={len(request.documents) if request.documents else 0}")
-            logger.info("[Chat] 收到请求: message='%s', images=%s, documents=%s",
+            logger.info("[Chat] 收到请求: message='%s', images=%s, documents=%s, tts_enabled=%s",
                        request.message[:50] if request.message else '',
                        len(request.images) if request.images else 0,
-                       len(request.documents) if request.documents else 0)
+                       len(request.documents) if request.documents else 0,
+                       request.tts_enabled)
             ai_provider = get_module_provider("agent")
             agent = AgentCore(
                 db=db,
@@ -171,18 +174,129 @@ async def chat_message_stream(
                     current_goal = {"id": request.goal_id}
             else:
                 current_goal = None
-            
-            async for event in agent.run(
-                message=request.message,
-                session_id=request.session_id,
-                history=request.history,
-                images=request.images,
-                documents=request.documents,
-                videos=request.videos,
-                audios=request.audios,
-                current_goal=current_goal,
-            ):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+            if request.tts_enabled:
+                # === 流式 TTS 模式 ===
+                coordinator = None
+                try:
+                    from app.services.streaming_tts import create_streaming_coordinator
+                    coordinator = create_streaming_coordinator()
+                    logger.info(f"[Chat] 流式TTS已启用，coordinator创建成功, provider={type(coordinator._provider).__name__}, enabled={coordinator._provider.enabled}")
+                except Exception as e:
+                    logger.warning(f"[Chat] 创建流式TTS协调器失败，降级为普通模式: {e}", exc_info=True)
+                    coordinator = None
+
+            if request.tts_enabled and coordinator:
+                # 合并队列：agent 事件和 audio 事件都放入同一个队列
+                merged_queue = asyncio.Queue()
+
+                async def run_agent():
+                    """运行 agent 并将事件放入合并队列"""
+                    try:
+                        # 用于在工具调用时临时保存未合成的文本
+                        accumulated_text = ""
+                        
+                        async for event in agent.run(
+                            message=request.message,
+                            session_id=request.session_id,
+                            history=request.history,
+                            images=request.images,
+                            documents=request.documents,
+                            videos=request.videos,
+                            audios=request.audios,
+                            current_goal=current_goal,
+                        ):
+                            # 工具调用事件：先 flush 已积累的文本，再通知前端
+                            if "tool_call" in event:
+                                # flush 已积累的文本（工具调用前模型的预输出）
+                                if accumulated_text and coordinator:
+                                    logger.info(f"[Chat-TTS] 工具调用前flush，文本长度={len(accumulated_text)}")
+                                    coordinator.feed_chunk(accumulated_text)
+                                    accumulated_text = ""
+                                    await coordinator.flush()
+                                # 通知前端本轮文本结束（但流不终止，音频事件会继续到达）
+                                await merged_queue.put(("agent", {"text_done": True, "full_response": ""}))
+                                await merged_queue.put(("agent", event))
+                                continue
+                            
+                            # 文本chunk：累积到buffer
+                            if event.get("type") == "chunk" and event.get("content"):
+                                accumulated_text += event["content"]
+                                await merged_queue.put(("agent", event))
+                            # agent 最终完成
+                            elif event.get("done"):
+                                # flush 最后积累的文本
+                                if accumulated_text and coordinator:
+                                    logger.info(f"[Chat-TTS] 最终flush，文本长度={len(accumulated_text)}")
+                                    coordinator.feed_chunk(accumulated_text)
+                                    accumulated_text = ""
+                                # 标记 flushed 防止后续误注入
+                                if coordinator:
+                                    coordinator._flushed = True
+                                    await coordinator.flush()
+                                await merged_queue.put(("agent", event))
+                    except Exception as e:
+                        logger.error(f"Agent 运行出错: {e}")
+                        await merged_queue.put(("agent", {"error": str(e)}))
+                        await merged_queue.put(("agent", {"done": True}))
+                        if coordinator and not coordinator._flushed:
+                            try:
+                                await coordinator.flush()
+                            except Exception as flush_err:
+                                logger.warning(f"Agent异常后flush失败: {flush_err}")
+                                coordinator.stop()
+
+                async def run_tts():
+                    """从 coordinator 获取音频事件放入合并队列"""
+                    try:
+                        async for audio_event in coordinator.get_audio_events():
+                            await merged_queue.put(("tts", audio_event))
+                    except Exception as e:
+                        logger.error(f"TTS 流出错: {e}", exc_info=True)
+                    finally:
+                        await merged_queue.put(("tts", None))  # TTS 流结束标记
+
+                # 并行启动两个任务
+                agent_task = asyncio.create_task(run_agent())
+                tts_task = asyncio.create_task(run_tts())
+
+                agent_done = False
+                tts_done = False
+
+                while not (agent_done and tts_done):
+                    source, event = await merged_queue.get()
+
+
+                    if source == "agent":
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        if event.get("done"):
+                            agent_done = True
+                            # agent 完成时发送 audio_done（只发一次，覆盖所有轮次的音频）
+                            total = coordinator.get_total_sentences() if coordinator else 0
+                            logger.info(f"[Chat-TTS] agent完成，发送audio_done(total={total})")
+                            yield f"data: {json.dumps({'type': 'audio_done', 'total': total}, ensure_ascii=False)}\n\n"
+                    elif source == "tts":
+                        if event is None:
+                            tts_done = True
+                        else:
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+                # 确保任务完成
+                await asyncio.gather(agent_task, tts_task, return_exceptions=True)
+
+            else:
+                # === 原有非 TTS 模式（保持不变）===
+                async for event in agent.run(
+                    message=request.message,
+                    session_id=request.session_id,
+                    history=request.history,
+                    images=request.images,
+                    documents=request.documents,
+                    videos=request.videos,
+                    audios=request.audios,
+                    current_goal=current_goal,
+                ):
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             logger.error("流式聊天出错: %s", e)

@@ -18,6 +18,7 @@ import MermaidRenderer from '../components/MermaidRenderer'
 import ChatPPTVisualizer, { InlineMiniCard } from '../components/ChatPPTVisualizer'
 import { InlineExerciseCard } from '../components/ExercisePractice'
 import { studyGoalAPI, ttsAPI } from '../utils/api'
+import { AudioQueuePlayer } from '../utils/audioQueue'
 
 // ── 工具调用卡片组件 ──────────────────────────────────────────────────────────
 function ToolCallCard({ toolCall }) {
@@ -563,6 +564,7 @@ function Chat() {
   const [autoReadEnabled, setAutoReadEnabled] = useState(true)
   const [isPlayingTTS, setIsPlayingTTS] = useState(false)
   const currentAudioRef = useRef(null)
+  const audioQueueRef = useRef(null)
   // 使用 ref 跟踪最新状态，避免 SSE 回调中的闭包问题
   const autoReadEnabledRef = useRef(autoReadEnabled)
   useEffect(() => {
@@ -571,9 +573,15 @@ function Chat() {
 
   // 监听自动朗读开关变化，关闭时立即停止播放
   useEffect(() => {
-    if (!autoReadEnabled && currentAudioRef.current) {
-      currentAudioRef.current.pause()
-      currentAudioRef.current = null
+    if (!autoReadEnabled) {
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause()
+        currentAudioRef.current = null
+      }
+      if (audioQueueRef.current) {
+        audioQueueRef.current.stop()
+        audioQueueRef.current = null
+      }
       setIsPlayingTTS(false)
     }
   }, [autoReadEnabled])
@@ -815,6 +823,12 @@ function Chat() {
       isStoppedRef.current = true
       setStopping(true)
       abortControllerRef.current.abort()
+      // 停止流式TTS播放
+      if (audioQueueRef.current) {
+        audioQueueRef.current.stop()
+        audioQueueRef.current = null
+        setIsPlayingTTS(false)
+      }
       message.info('已停止生成')
     }
   }, [])
@@ -1178,6 +1192,18 @@ function Chat() {
     // 仅用于更新消息列表状态，不含副作用
     setMessages(prev => [...prev, userMessage, { id: aiMessageId, role: 'assistant', content: '', toolCalls: [], statusMessage: '', timestamp: new Date() }])
 
+    // 初始化流式音频播放器
+    if (autoReadEnabledRef.current) {
+      if (audioQueueRef.current) {
+        audioQueueRef.current.stop()
+      }
+      audioQueueRef.current = new AudioQueuePlayer()
+      audioQueueRef.current.onPlaybackComplete(() => {
+        setIsPlayingTTS(false)
+      })
+      setIsPlayingTTS(true)
+    }
+
     // fetch 在 setMessages 外部调用，确保只执行一次
     fetch('/api/chat/message/stream', {
       method: 'POST',
@@ -1190,6 +1216,7 @@ function Chat() {
         videos: videos.length > 0 ? videos : null,    // 同时发送原始视频作为备用方案
         audios: audios.length > 0 ? audios : null,
         goal_id: activeStudyGoalIdRef.current,  // 使用 ref 确保获取最新值
+        tts_enabled: autoReadEnabledRef.current || false,  // 开启自动朗读时启用流式TTS
       }),
       signal: abortControllerRef.current.signal,
     })
@@ -1199,31 +1226,58 @@ function Chat() {
       const decoder = new TextDecoder()
 
       const readStream = async () => {
+        let sseBuffer = ''  // SSE事件缓冲区，用于重组被TCP分片截断的事件
         while (true) {
           if (isStoppedRef.current) break
           const { done, value } = await reader.read()
           if (isStoppedRef.current) break
           if (done) break
 
-          const chunk = decoder.decode(value, { stream: true })
-          for (const line of chunk.split('\n')) {
-            if (line.startsWith('data: ')) {
+          sseBuffer += decoder.decode(value, { stream: true })
+
+          // 按SSE规范解析：事件以 \n\n 分隔
+          // 对于大型音频事件(base64 ~17KB+)，TCP分片可能将一个事件拆到多个包中
+          // 必须缓冲到收到完整事件(\n\n结尾)才解析
+          let eventEndIdx = sseBuffer.indexOf('\n\n')
+          if (eventEndIdx === -1) {
+            continue
+          }
+
+          // 提取并处理所有完整事件
+          while (eventEndIdx !== -1) {
+            const eventBlock = sseBuffer.substring(0, eventEndIdx)
+            sseBuffer = sseBuffer.substring(eventEndIdx + 2)
+
+            // 解析事件块中的 data 行
+            for (const line of eventBlock.split('\n')) {
+              if (!line.startsWith('data: ')) continue
               const jsonStr = line.slice(6)
               const parseResult = safeJsonParse(jsonStr)
               if (!parseResult.success) {
-                // 如果解析失败但包含 SSE 数据，可能是流被截断，继续等待下一块数据
-                console.warn('[Chat] JSON 解析失败，可能因流式传输被截断:', parseResult.error?.message)
+                console.warn('[Chat] JSON 解析失败:', parseResult.error?.message)
                 continue
               }
               const data = parseResult.data
 
+              // 流式TTS音频事件处理
+              if (data.type === 'audio_chunk' && data.audio_base64) {
+                if (audioQueueRef.current) {
+                  audioQueueRef.current.enqueue(data.index, data.audio_base64, data.format)
+                }
+                continue
+              }
+              if (data.type === 'audio_done') {
+                if (audioQueueRef.current) {
+                  audioQueueRef.current.markComplete(data.total)
+                }
+                continue
+              }
+
               // 处理特殊 Action 事件（如 session_ended）
               if (data.action === 'session_ended' && data.data) {
-                // 显示学习记录保存成功的提示
                 if (data.data.message) {
                   message.success(data.data.message)
                 }
-                // 隐藏快捷操作按钮（结束学习后不再需要）
                 setShowQuickActions(false)
               }
 
@@ -1245,7 +1299,6 @@ function Chat() {
                   if (idx === -1) return msgPrev
                   const next = [...msgPrev]
                   const existingToolCalls = next[idx].toolCalls || []
-                  // 查找是否已有同名调用中状态，有则更新为完成，否则新增
                   const callIdx = existingToolCalls.findIndex(
                     tc => tc.toolName === data.tool_call && tc.status === 'calling'
                   )
@@ -1275,12 +1328,10 @@ function Chat() {
                           pptViewMode: 'inline',
                           pptCurrentPage: 0
                         }
-                        // 默认显示inline迷你卡片，用户点击后可切换到fullscreen
                         setPptData(result)
                         setPptViewMode('inline')
                         setPptCurrentPage(0)
                         setActivePptMessageId(aiMessageId)
-                        // 从PPT工具返回结果中提取goal_id并更新activeStudyGoalId
                         if (result.goal_id) {
                           setActiveStudyGoalId(result.goal_id)
                         }
@@ -1334,15 +1385,29 @@ function Chat() {
                 })
               }
 
+              // text_done: 本轮文本结束（在工具调用前），通知前端填充内容
+              if (data.text_done !== undefined) {
+                if (data.full_response) {
+                  setMessages(msgPrev => {
+                    const idx = msgPrev.findIndex(msg => msg.id === aiMessageId)
+                    if (idx === -1) return msgPrev
+                    const next = [...msgPrev]
+                    if (!next[idx].content) {
+                      next[idx] = { ...next[idx], content: data.full_response }
+                    }
+                    return next
+                  })
+                }
+                continue
+              }
+
               if (data.done) {
                 setLoading(false)
-                setShowQuickActions(true) // 显示快捷操作按钮
-                // 确保 PPT 全局状态与消息中的 pptData 一致
+                setShowQuickActions(true)
                 setMessages(msgPrev => {
                   const idx = msgPrev.findIndex(msg => msg.id === aiMessageId)
                   if (idx !== -1 && msgPrev[idx].pptData) {
                     const msg = msgPrev[idx]
-                    // 更新全局 PPT 状态
                     setPptData(msg.pptData)
                     setPptViewMode(msg.pptViewMode || 'fullscreen')
                     setPptCurrentPage(msg.pptCurrentPage ?? 0)
@@ -1351,56 +1416,22 @@ function Chat() {
                   return msgPrev
                 })
 
-                // ── 自动朗读：开启自动朗读时，所有AI回复完成后自动朗读 ───────────
+                // ── 自动朗读：流式TTS模式下音频已通过SSE实时播放，无需额外处理 ──
                 if (autoReadEnabledRef.current) {
-                  const fullResponse = data.full_response || ''
-                  const textToRead = fullResponse
-                    ? stripMarkdown(fullResponse)
-                    : (() => {
-                      // fallback：从消息列表中取最新AI消息
-                      const msgs = messagesRef.current
-                      const lastAi = [...msgs].reverse().find(m => m.role === 'assistant' && m.content)
-                      return lastAi ? stripMarkdown(lastAi.content) : ''
-                    })()
-
-                  if (textToRead) {
-                    ;(async () => {
-                      try {
-                        setIsPlayingTTS(true)
-                        const res = await ttsAPI.synthesizeText(textToRead.slice(0, 5000))
-                        const { success, audio_base64, error } = res.data || {}
-                        if (!success || !audio_base64) {
-                          console.warn('[Chat] TTS合成失败:', error)
-                          setIsPlayingTTS(false)
-                          return
-                        }
-                        // 确定音频格式
-                        const audio = new Audio('data:audio/wav;base64,' + audio_base64)
-                        currentAudioRef.current = audio
-                        audio.onended = () => {
-                          setIsPlayingTTS(false)
-                          currentAudioRef.current = null
-                        }
-                        audio.onerror = () => {
-                          console.warn('[Chat] 音频播放出错')
-                          setIsPlayingTTS(false)
-                          currentAudioRef.current = null
-                        }
-                        await audio.play()
-                      } catch (err) {
-                        console.error('[Chat] 自动朗读失败:', err)
-                        setIsPlayingTTS(false)
-                      }
-                    })()
-                  }
-                  // 朗读结束后重置语音输入标记
                   setIsVoiceInput(false)
                 }
 
-                return
+                // 注意：不要 return！TTS音频事件在 done 之后才到达
+                // 必须继续读取流，直到服务器关闭连接
+                continue
               }
               if (data.error) throw new Error(data.error)
             }
+
+            // 查找下一个完整事件
+            const nextEndIdx = sseBuffer.indexOf('\n\n')
+            if (nextEndIdx === -1) break
+            eventEndIdx = nextEndIdx
           }
         }
       }

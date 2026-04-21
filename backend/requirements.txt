@@ -40,6 +40,9 @@ pyyaml==6.0.1
 # DashScope - 阿里云百炼云端TTS服务
 dashscope>=1.14.0
 
+# Edge TTS - 微软免费TTS（无需API Key）
+edge-tts>=6.0.0
+
 # Testing
 pytest==7.4.4
 pytest-asyncio==0.23.3
