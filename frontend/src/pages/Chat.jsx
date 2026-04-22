@@ -457,8 +457,12 @@ function Chat() {
   const location = useLocation()
   const navigate = useNavigate()
   const urlGoalId = searchParams.get('goalId')
+  const urlSessionId = searchParams.get('sessionId')  // 从学习记录页面传递的会话ID
   const autoLesson = searchParams.get('autoLesson')
   const goalTitle = location.state?.goalTitle || searchParams.get('goalTitle') || ''
+  
+  // 从 URL sessionId 加载的对话记录（用于从学习记录继续）
+  const [loadedConversation, setLoadedConversation] = useState(null)
   
   // 初始化时从 sessionStorage 恢复聊天记录和PPT数据
   const [messages, setMessages] = useState(() => {
@@ -621,6 +625,11 @@ function Chat() {
   // 从 API 获取的目标标题（兜底方案）
   const [fetchedGoalTitle, setFetchedGoalTitle] = useState('')
 
+  // 学习记录保存完成标记（用于结束学习后跳转）
+  const [studySaved, setStudySaved] = useState(false)
+  // 防重标记：确保同一个会话只保存一次学习记录
+  const hasSavedStudyRef = useRef(false)
+
   // 当前活跃学习目标ID（用于追踪用户正在学习的目标）
   // 优先使用 URL 参数中的 goalId，其次使用状态中的值
   const [activeStudyGoalId, setActiveStudyGoalId] = useState(() => {
@@ -660,6 +669,76 @@ function Chat() {
     }
     fetchGoalTitle()
   }, [urlGoalId, goalTitle])
+
+  // ── 从学习记录页面加载会话对话 ──────────────────────────────────────────────
+  useEffect(() => {
+    console.log(`[Chat] useEffect 触发: urlSessionId=${urlSessionId}`)
+    
+    // 只有当有 sessionId 时才从后端加载
+    if (!urlSessionId) {
+      console.log('[Chat] urlSessionId 为空，跳过加载')
+      return
+    }
+
+    // 检查 sessionStorage 中是否有有效数据
+    const saved = sessionStorage.getItem(SESSION_STORAGE_KEY)
+    console.log(`[Chat] sessionStorage 内容:`, saved ? saved.substring(0, 200) : 'null/empty')
+    
+    if (saved && saved.trim().length > 0) {
+      try {
+        const msgs = JSON.parse(saved)
+        if (msgs && msgs.length > 0) {
+          console.log(`[Chat] sessionStorage 有有效数据 ${msgs.length} 条，跳过后端加载`)
+          return
+        }
+      } catch (e) {
+        console.warn('[Chat] sessionStorage 解析失败，将从后端加载')
+      }
+    }
+
+    const loadSessionConversation = async () => {
+      console.log(`[Chat] 开始从后端加载会话: goalId=${urlGoalId}, sessionId=${urlSessionId}`)
+      try {
+        const res = await studyGoalAPI.getSessionConversation(urlGoalId, urlSessionId)
+        console.log(`[Chat] getSessionConversation 返回:`, res)
+        console.log(`[Chat] res.data:`, res?.data)
+        
+        if (res?.data?.success && res?.data?.conversation) {
+          const conversation = res.data.conversation
+          console.log(`[Chat] conversation 类型:`, typeof conversation, Array.isArray(conversation))
+          console.log(`[Chat] conversation 内容:`, conversation)
+          
+          // conversation 应该是一个数组，包含对话消息
+          if (Array.isArray(conversation) && conversation.length > 0) {
+            // 转换为消息格式
+            const msgs = conversation.map((msg, idx) => ({
+              id: Date.now() + idx,
+              role: msg.role || 'user',
+              content: msg.content || '',
+              timestamp: new Date(msg.timestamp || Date.now()),
+            }))
+            console.log(`[Chat] 转换后的消息:`, msgs)
+            
+            setMessages(msgs)
+            setLoadedConversation(urlSessionId)
+            
+            // 保存到 sessionStorage 供后续使用
+            sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(msgs))
+            
+            console.log(`[Chat] 成功加载 ${msgs.length} 条对话记录到 state 和 sessionStorage`)
+          } else {
+            console.warn('[Chat] conversation 为空数组或不是数组')
+          }
+        } else {
+          console.warn('[Chat] 未找到对应的会话记录，res.data:', res?.data)
+        }
+      } catch (err) {
+        console.error('[Chat] 加载会话记录失败:', err)
+      }
+    }
+
+    loadSessionConversation()
+  }, [urlSessionId, urlGoalId])
 
   // 计算最终使用的目标标题（优先级：location.state > API获取 > 空）
   const finalGoalTitle = goalTitle || fetchedGoalTitle
@@ -1202,6 +1281,13 @@ function Chat() {
         setIsPlayingTTS(false)
       })
       setIsPlayingTTS(true)
+    } else {
+      // 关闭自动朗读时，确保停止任何正在播放的音频
+      if (audioQueueRef.current) {
+        audioQueueRef.current.stop()
+        audioQueueRef.current = null
+        setIsPlayingTTS(false)
+      }
     }
 
     // fetch 在 setMessages 外部调用，确保只执行一次
@@ -1359,6 +1445,54 @@ function Chat() {
                     }
                   }
                   
+                  // 检测是否为学习会话保存工具且成功
+                  // 前端直接调用 API 保存完整对话历史和个性化摘要
+                  if (data.tool_call === 'save_study_summary' && data.tool_result) {
+                    try {
+                      const result = typeof data.tool_result === 'string'
+                        ? JSON.parse(data.tool_result)
+                        : data.tool_result
+                      if (result && result.success && result._前端保存) {
+                        // 防重：确保同一个会话只保存一次学习记录
+                        if (hasSavedStudyRef.current) {
+                          console.log('[Chat] 学习记录已保存过，跳过重复保存')
+                          setStudySaved(true)
+                        } else {
+                          hasSavedStudyRef.current = true
+                          // 前端直接调用 API 保存完整对话历史
+                          const currentMessages = messagesRef.current
+                          if (currentMessages.length > 0 && activeStudyGoalIdRef.current) {
+                            const conversationLog = currentMessages.map(m => ({
+                              role: m.role,
+                              content: m.content || '',
+                              timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : new Date().toISOString()
+                            }))
+                            
+                            console.log('[Chat] 前端直接保存学习会话，消息数:', conversationLog.length)
+                            
+                            // 调用后端 API 生成个性化摘要并保存
+                            studyGoalAPI.generateSummaryAndSave(activeStudyGoalIdRef.current, {
+                              conversation_log: conversationLog,
+                              goal_title: goalTitle || '',
+                            }).then(saveRes => {
+                              console.log('[Chat] 前端保存学习会话结果:', saveRes)
+                              if (saveRes.data?.success) {
+                                setStudySaved(true)
+                              }
+                            }).catch(err => {
+                              console.error('[Chat] 前端保存学习会话失败:', err)
+                              setStudySaved(true)  // 仍然标记为已保存
+                            })
+                          } else {
+                            setStudySaved(true)
+                          }
+                        }
+                      }
+                    } catch (e) {
+                      console.warn('[Chat] 解析学习记录保存结果失败:', e)
+                    }
+                  }
+                  
                   next[idx] = { ...next[idx], toolCalls: newToolCalls, statusMessage: '', ...pptDataUpdate, ...exerciseDataUpdate }
                   
                   return next
@@ -1421,6 +1555,52 @@ function Chat() {
                   setIsVoiceInput(false)
                 }
 
+                // ── 学习记录保存完成：5秒后清空上下文并跳转 ──
+                // 注意：需要在 readStream 外部读取最新的 studySaved 状态，使用 ref 方式
+                // 由于 studySaved 是在 SSE 回调中通过 setStudySaved 设置的，
+                // 我们需要通过检查当前消息的 toolCalls 来判断是否需要跳转
+                // 使用 setTimeout 延迟5秒执行跳转
+                setTimeout(() => {
+                  // 检查当前 AI 消息是否包含 save_study_summary 工具调用
+                  const currentMessages = messagesRef.current
+                  const aiMsg = currentMessages.find(m => m.id === aiMessageId)
+                  if (aiMsg && aiMsg.toolCalls) {
+                    const saveToolCall = aiMsg.toolCalls.find(tc => tc.toolName === 'save_study_summary')
+                    if (saveToolCall && saveToolCall.toolResult) {
+                      try {
+                        const result = typeof saveToolCall.toolResult === 'string'
+                          ? JSON.parse(saveToolCall.toolResult)
+                          : saveToolCall.toolResult
+                        if (result && result.success) {
+                          // 停止 TTS 朗读
+                          if (audioQueueRef.current) {
+                            audioQueueRef.current.stop()
+                            audioQueueRef.current = null
+                          }
+                          setIsPlayingTTS(false)
+                          
+                          message.info('学习记录已保存，即将返回学习目标列表...')
+                          
+                          // 5秒后清空上下文并跳转
+                          setTimeout(() => {
+                            // 清空聊天上下文
+                            setMessages([])
+                            setCanvasItems([])
+                            setCanvasPanelVisible(false)
+                            sessionStorage.removeItem(SESSION_STORAGE_KEY)
+                            setStudySaved(false)
+                            
+                            // 跳转到学习目标列表
+                            navigate('/goals')
+                          }, 5000)
+                        }
+                      } catch (e) {
+                        console.warn('[Chat] 检查学习记录保存状态失败:', e)
+                      }
+                    }
+                  }
+                }, 100)  // 短暂延迟确保消息状态已更新
+
                 // 注意：不要 return！TTS音频事件在 done 之后才到达
                 // 必须继续读取流，直到服务器关闭连接
                 continue
@@ -1435,7 +1615,7 @@ function Chat() {
           }
         }
       }
-      readStream()
+      return readStream()
     })
     .catch(error => {
       console.error('[Chat] 请求失败:', error)
@@ -1457,8 +1637,12 @@ function Chat() {
     if (currentAudioRef.current) {
       currentAudioRef.current.pause()
       currentAudioRef.current = null
-      setIsPlayingTTS(false)
     }
+    if (audioQueueRef.current) {
+      audioQueueRef.current.stop()
+      audioQueueRef.current = null
+    }
+    setIsPlayingTTS(false)
   }, [])
 
   // ── 剥离 Markdown 标记，生成纯文本 ────────────────────────────────────────
@@ -1485,6 +1669,8 @@ function Chat() {
     if (isSendingRef.current || loading) return
     // 发送新消息时停止当前朗读
     stopTTSPlayback()
+    // 重置学习记录保存防重标记，允许新会话保存
+    hasSavedStudyRef.current = false
     // 设置语音输入标记（用于后续自动朗读）
     setIsVoiceInput(fromVoice)
     sendMessageDirect(text, attachments)

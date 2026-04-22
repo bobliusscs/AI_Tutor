@@ -215,6 +215,12 @@ class SimpleAgent:
                                     "progress": result_data.get("progress", {}),
                                     "note": "完整习题数据已发送给前端展示，请简要说明题目数量和难度分布，鼓励学生完成练习，不要重复题目内容或泄露答案"
                                 }, ensure_ascii=False)
+                            elif result_data.get("success") and result_data.get("_前端保存"):
+                                # save_study_summary 成功：精简结果，避免 LLM 第二轮输出冗余确认
+                                tool_result_for_llm = json.dumps({
+                                    "success": True,
+                                    "note": "学习记录保存请求已发送给前端，前端会在后台异步生成个性化摘要。你已经在第一轮向用户告别，第二轮无需再重复告别或输出长文本。如需要，可只回复简短的鼓励语（不超过10字）。"
+                                }, ensure_ascii=False)
                             elif not result_data.get("success"):
                                 # 工具调用失败时，为LLM提供明确的引导说明
                                 error_msg = result_data.get("error", "未知错误")
@@ -247,11 +253,12 @@ class SimpleAgent:
             yield {"done": True, "full_response": f"处理时遇到问题:{str(e)}"}
 
     def _load_learning_context(self, current_goal: dict = None) -> dict:
-        """加载学习上下文（包含用户信息和学习目标）"""
+        """加载学习上下文（包含用户信息、学习目标和历史学习记录）"""
         context = {
             "student_info": None,
             "current_goal": None,
             "all_goals": [],
+            "recent_sessions": [],  # 最近3次学习会话摘要
         }
 
         if not self.db or not self.student_id:
@@ -319,10 +326,56 @@ class SimpleAgent:
 
             context["all_goals"] = goals_info
 
+            # 3. 如果有当前学习目标，加载最近3次学习会话摘要
+            if current_goal_id:
+                context["recent_sessions"] = self._load_recent_sessions(current_goal_id)
+
         except Exception as e:
             logger.warning("加载学习上下文失败: %s", e)
 
         return context
+
+    def _load_recent_sessions(self, goal_id: int, limit: int = 3) -> list:
+        """
+        加载指定学习目标的最近N次学习会话摘要。
+        
+        Args:
+            goal_id: 学习目标ID
+            limit: 返回的会话数量，默认3次
+            
+        Returns:
+            最近N次学习会话摘要列表
+        """
+        try:
+            from app.models.study_record import StudyRecord
+            import json
+            from sqlalchemy import desc
+            
+            # 查询该学生、该目标的最近学习记录
+            records = self.db.query(StudyRecord).filter(
+                StudyRecord.student_id == self.student_id,
+                StudyRecord.goal_id == goal_id
+            ).order_by(desc(StudyRecord.record_date)).limit(20).all()
+
+            all_sessions = []
+            for record in records:
+                if record.session_summary:
+                    try:
+                        sessions = json.loads(record.session_summary)
+                        if isinstance(sessions, list):
+                            for s in sessions:
+                                s["record_date"] = str(record.record_date) if record.record_date else ""
+                                all_sessions.append(s)
+                    except json.JSONDecodeError:
+                        pass
+
+            # 按时间倒序，取最近的limit条
+            all_sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            return all_sessions[:limit]
+
+        except Exception as e:
+            logger.warning(f"加载最近会话摘要失败: {e}")
+            return []
 
     def _build_messages(self, message: str, history: list = None, learning_context: dict = None, images: list = None, documents: list = None, videos: list = None, audios: list = None) -> list:
         """构建消息列表"""
@@ -871,11 +924,33 @@ class SimpleAgent:
             else:
                 goals_text = "无"
             
-            # 3. 替换占位符
+            # 3. 构建历史学习记录文本
+            recent_sessions_text = ""
+            if learning_context and learning_context.get("recent_sessions"):
+                sessions = learning_context["recent_sessions"]
+                if sessions:
+                    session_parts = []
+                    for i, session in enumerate(sessions, 1):
+                        summary = session.get("summary", "无")
+                        duration = session.get("study_duration_minutes", 0)
+                        record_date = session.get("record_date", "")
+                        created_at = session.get("created_at", "")[:16]  # 只显示日期和时间
+                        
+                        date_info = record_date or (created_at[:10] if created_at else "")
+                        time_info = f"{duration}分钟" if duration else ""
+                        session_parts.append(f"{i}. [{date_info}]{summary}{f' ({time_info})' if time_info else ''}")
+                    recent_sessions_text = "\n".join(session_parts)
+                else:
+                    recent_sessions_text = "暂无历史学习记录"
+            else:
+                recent_sessions_text = "暂无历史学习记录"
+            
+            # 4. 替换占位符
             prompt = template.replace("{{student_info}}", student_text.strip())
             prompt = prompt.replace("{{all_goals}}", goals_text)
+            prompt = prompt.replace("{{recent_sessions}}", recent_sessions_text)
             
-            # 4. 注入工具描述（含触发规则，已合并进description）
+            # 5. 注入工具描述（含触发规则，已合并进description）
             tools_desc = self.orchestrator.get_tools_description()
             prompt = prompt.replace("{{tools}}", tools_desc)
             
@@ -884,7 +959,7 @@ class SimpleAgent:
             logger.info(f"[Agent] 系统提示词大小: {total_chars} 字符")
             
             # 检查是否还有未替换的占位符
-            placeholders = ["{{student_info}}", "{{all_goals}}", "{{tools}}"]
+            placeholders = ["{{student_info}}", "{{all_goals}}", "{{tools}}", "{{recent_sessions}}"]
             for placeholder in placeholders:
                 if placeholder in prompt:
                     logger.warning(f"[Agent] 发现未替换的占位符: {placeholder}")

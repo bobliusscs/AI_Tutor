@@ -7,6 +7,7 @@ export class AudioQueuePlayer {
     this.queue = new Map()    // Map<index, {audioBase64, mimeType}>
     this.nextPlayIndex = 0    // 下一个要播放的分片索引
     this.playing = false      // 是否正在播放
+    this._starting = false    // 是否正在启动播放（防竞态锁）
     this.stopped = false      // 是否已停止
     this.completed = false    // 是否所有分片都已到达
     this.totalChunks = -1     // 总分片数（-1表示未知）
@@ -85,6 +86,17 @@ export class AudioQueuePlayer {
           resolve(true) // 即使失败也继续
         }
 
+        audio.onpause = () => {
+          // 仅在主动 stop() 时处理，避免正常暂停导致跳过
+          if (this.stopped) {
+            this.currentAudio = null
+            this.queue.delete(index)
+            this.nextPlayIndex = index + 1
+            this._emitStateChange()
+            resolve(true)
+          }
+        }
+
         audio.play().catch((err) => {
           console.warn(`音频分片 ${index} 播放异常:`, err)
           this.currentAudio = null
@@ -160,18 +172,17 @@ export class AudioQueuePlayer {
    * 如果已在播放中则忽略
    */
   async startPlayback() {
-    // 防重复播放
-    if (this.playing) {
+    // 防重复播放（双重检查：playing 状态 + _starting 锁）
+    if (this.playing || this._starting || this.stopped) {
       return
     }
 
-    // 已停止则不能开始
-    if (this.stopped) {
-      return
+    this._starting = true
+    try {
+      await this._playNext()
+    } finally {
+      this._starting = false
     }
-
-    // 开始播放
-    await this._playNext()
   }
 
   /**
@@ -186,6 +197,9 @@ export class AudioQueuePlayer {
       this.currentAudio.currentTime = 0
       this.currentAudio = null
     }
+
+    // 清空队列，防止旧音频被后续误播放
+    this.queue.clear()
 
     this.playing = false
     this._emitStateChange()
@@ -207,16 +221,17 @@ export class AudioQueuePlayer {
       return
     }
 
-    // 如果当前没有在播放且还有未播放的分片，尝试继续播放
-    if (!this.playing && !this.stopped) {
-      this.startPlayback()
-    }
-
-    // 检查是否所有分片都已播放完毕
+    // 如果所有分片已经播放完毕，直接触发完成回调，不要再启动播放
     if (this.nextPlayIndex >= this.totalChunks) {
       this.playing = false
       this._emitStateChange()
       if (this._onPlaybackComplete) this._onPlaybackComplete()
+      return
+    }
+
+    // 如果当前没有在播放且还有未播放的分片，尝试继续播放
+    if (!this.playing && !this.stopped) {
+      this.startPlayback()
     }
   }
 
@@ -253,6 +268,7 @@ export class AudioQueuePlayer {
     // 重置状态
     this.nextPlayIndex = 0
     this.playing = false
+    this._starting = false
     this.stopped = false
     this.completed = false
     this.totalChunks = -1

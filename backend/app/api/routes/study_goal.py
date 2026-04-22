@@ -707,3 +707,247 @@ async def get_goal_records(
             "total": len(result)
         }
     )
+
+
+@router.delete("/{goal_id}/records/{record_id}", response_model=Response)
+async def delete_study_record(
+    goal_id: int,
+    record_id: int,
+    current_student_id: int = Depends(get_current_student_id),
+    db: Session = Depends(get_db)
+):
+    """
+    删除指定的学习记录
+
+    Args:
+        goal_id: 学习目标ID
+        record_id: 学习记录ID
+    """
+    # 验证目标存在且属于当前学生
+    goal = db.query(StudyGoal).filter(
+        StudyGoal.id == goal_id,
+        StudyGoal.student_id == current_student_id
+    ).first()
+
+    if not goal:
+        raise HTTPException(status_code=404, detail="学习目标不存在")
+
+    # 查找学习记录
+    from app.models.study_record import StudyRecord
+    record = db.query(StudyRecord).filter(
+        StudyRecord.id == record_id,
+        StudyRecord.goal_id == goal_id,
+        StudyRecord.student_id == current_student_id
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=404, detail="学习记录不存在")
+
+    db.delete(record)
+    db.commit()
+
+    return Response(
+        success=True,
+        message="删除成功",
+        data={"id": record_id}
+    )
+
+
+@router.post("/{goal_id}/session/save", response_model=Response)
+async def save_study_session(
+    goal_id: int,
+    request_data: dict,
+    current_student_id: int = Depends(get_current_student_id),
+    db: Session = Depends(get_db)
+):
+    """
+    保存学习会话记录（由前端直接调用）
+
+    Args:
+        goal_id: 学习目标ID
+        request_data: 包含 conversation_log, summary 等字段
+    """
+    from app.models.study_record import StudyRecord
+    from datetime import date
+    
+    # 验证目标存在且属于当前学生
+    goal = db.query(StudyGoal).filter(
+        StudyGoal.id == goal_id,
+        StudyGoal.student_id == current_student_id
+    ).first()
+
+    if not goal:
+        raise HTTPException(status_code=404, detail="学习目标不存在")
+
+    today = date.today()
+    
+    # 查找或创建当天的学习记录
+    record = db.query(StudyRecord).filter(
+        StudyRecord.student_id == current_student_id,
+        StudyRecord.goal_id == goal_id,
+        StudyRecord.record_date == today
+    ).first()
+
+    import json
+    
+    if record is None:
+        record = StudyRecord(
+            student_id=current_student_id,
+            goal_id=goal_id,
+            record_date=today,
+            study_duration_minutes=request_data.get('study_duration_minutes', 0),
+            lessons_completed=request_data.get('lessons_completed', 0),
+        )
+        db.add(record)
+    
+    # 解析现有会话摘要
+    existing_sessions = []
+    if record.session_summary:
+        try:
+            existing_sessions = json.loads(record.session_summary)
+            if not isinstance(existing_sessions, list):
+                existing_sessions = []
+        except json.JSONDecodeError:
+            existing_sessions = []
+    
+    # 解析现有对话记录
+    existing_conversations = []
+    if record.conversation_log:
+        try:
+            existing_conversations = json.loads(record.conversation_log)
+            if not isinstance(existing_conversations, list):
+                existing_conversations = []
+        except json.JSONDecodeError:
+            existing_conversations = []
+    
+    # 生成会话 ID
+    from datetime import datetime
+    session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    now_iso = datetime.now().isoformat()
+    
+    # 防重：检查最近5秒内是否已有相同摘要的会话被保存（防止前端重复调用）
+    if existing_sessions:
+        last_session = existing_sessions[-1]
+        try:
+            last_created = datetime.fromisoformat(last_session.get("created_at", ""))
+            time_diff = (datetime.now() - last_created).total_seconds()
+            if time_diff < 5:
+                logger.info(f"[StudySession] 5秒内已有会话保存，跳过重复保存: goal={goal_id}, last_session={last_session.get('session_id')}")
+                return Response(
+                    success=True,
+                    message="会话记录已保存（去重）",
+                    data={
+                        "session_id": last_session.get("session_id"),
+                        "session_count": len(existing_sessions),
+                        "deduplicated": True
+                    }
+                )
+        except (ValueError, TypeError):
+            pass
+    
+    # 添加会话摘要
+    new_session = {
+        "session_id": session_id,
+        "summary": request_data.get('summary', ''),
+        "created_at": now_iso,
+        "study_duration_minutes": request_data.get('study_duration_minutes', 0),
+        "lessons_completed": request_data.get('lessons_completed', 0),
+    }
+    existing_sessions.append(new_session)
+    
+    # 添加对话记录
+    conversation_log = request_data.get('conversation_log', [])
+    if isinstance(conversation_log, str):
+        try:
+            conversation_log = json.loads(conversation_log)
+        except json.JSONDecodeError:
+            conversation_log = []
+    
+    new_conversation_record = {
+        "session_id": session_id,
+        "messages": conversation_log if isinstance(conversation_log, list) else [],
+        "created_at": now_iso,
+    }
+    existing_conversations.append(new_conversation_record)
+    
+    # 保留最近10次
+    if len(existing_sessions) > 10:
+        existing_sessions = existing_sessions[-10:]
+    if len(existing_conversations) > 10:
+        existing_conversations = existing_conversations[-10:]
+    
+    # 保存
+    record.session_summary = json.dumps(existing_sessions, ensure_ascii=False)
+    record.conversation_log = json.dumps(existing_conversations, ensure_ascii=False)
+    
+    db.commit()
+
+    return Response(
+        success=True,
+        message="会话记录保存成功",
+        data={
+            "session_id": session_id,
+            "session_count": len(existing_sessions)
+        }
+    )
+
+
+@router.post("/{goal_id}/session/generate-summary", response_model=Response)
+async def generate_session_summary(
+    goal_id: int,
+    request_data: dict,
+    current_student_id: int = Depends(get_current_student_id),
+    db: Session = Depends(get_db)
+):
+    """
+    调用 LLM 从对话历史中生成个性化的学习特征描述。
+
+    Args:
+        goal_id: 学习目标ID
+        request_data: 包含 conversation_log, goal_title 等字段
+    """
+    import json
+    from app.agent.tools import generate_personalized_summary
+    
+    # 验证目标存在
+    goal = db.query(StudyGoal).filter(
+        StudyGoal.id == goal_id,
+        StudyGoal.student_id == current_student_id
+    ).first()
+
+    if not goal:
+        raise HTTPException(status_code=404, detail="学习目标不存在")
+
+    # 获取对话历史
+    conversation_log = request_data.get('conversation_log', [])
+    if isinstance(conversation_log, str):
+        try:
+            conversation_log = json.loads(conversation_log)
+        except json.JSONDecodeError:
+            conversation_log = []
+
+    # 获取目标标题
+    goal_title = request_data.get('goal_title', goal.title or '')
+
+    # 调用 LLM 生成个性化摘要
+    result = await generate_personalized_summary(
+        conversation_log=conversation_log,
+        goal_title=goal_title,
+        db=db
+    )
+
+    if result.get("success"):
+        return Response(
+            success=True,
+            message="个性化摘要生成成功",
+            data={
+                "summary": result.get("summary", ""),
+                "insights": result.get("insights", {})
+            }
+        )
+    else:
+        return Response(
+            success=False,
+            message=result.get("error", "生成摘要失败"),
+            data={"summary": result.get("summary", "")}
+        )

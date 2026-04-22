@@ -275,6 +275,9 @@ async def chat_message_stream(
                             total = coordinator.get_total_sentences() if coordinator else 0
                             logger.info(f"[Chat-TTS] agent完成，发送audio_done(total={total})")
                             yield f"data: {json.dumps({'type': 'audio_done', 'total': total}, ensure_ascii=False)}\n\n"
+                            # 关闭 coordinator，等待 pending TTS 完成并通知 get_audio_events 退出
+                            if coordinator:
+                                await coordinator.close()
                     elif source == "tts":
                         if event is None:
                             tts_done = True

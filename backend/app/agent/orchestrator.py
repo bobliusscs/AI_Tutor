@@ -59,6 +59,15 @@ class ToolOrchestrator:
         except Exception as e:
             logger.warning(f"注册工具函数 get_section_exercises 失败: {e}")
         
+        # 注册学习会话管理工具
+        try:
+            from app.agent.tools import save_study_summary, get_recent_sessions_summary
+            self.skill_manager.register_tool_function("save_study_summary", save_study_summary)
+            self.skill_manager.register_tool_function("get_recent_sessions_summary", get_recent_sessions_summary)
+            logger.info("已注册工具函数: save_study_summary, get_recent_sessions_summary")
+        except Exception as e:
+            logger.warning(f"注册学习会话管理工具失败: {e}")
+        
         logger.info(f"已注册 {len(self.skill_manager.tool_functions)} 个工具函数")
     
     def load_mcp_servers(self, config_path: str = None):

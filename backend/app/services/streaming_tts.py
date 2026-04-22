@@ -432,15 +432,20 @@ class StreamingTTSCoordinator:
             pass
     
     async def close(self):
-        """安全关闭：优先 flush，失败则强制 stop"""
-        if not self._flushed and not self._stopped:
+        """安全关闭：等待所有 pending 任务完成，然后发送 sentinel 让 get_audio_events 退出"""
+        if self._stopped:
+            return
+        try:
+            await self.flush()
+        except Exception as e:
+            logger.warning(f"close() 中 flush 失败: {e}")
+        finally:
+            # 只放入 sentinel，不清空队列，确保已合成的音频都能被消费完
+            self._stopped = True
             try:
-                await self.flush()
-            except Exception as e:
-                logger.warning(f"close() 中 flush 失败: {e}")
-                self.stop()
-        elif not self._stopped:
-            self.stop()
+                self._audio_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
 
 # ========== 便捷函数 ==========

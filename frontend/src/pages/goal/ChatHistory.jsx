@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { message, Empty, Spin } from 'antd'
+import { message, Empty, Spin, Modal } from 'antd'
 import {
   MessageOutlined,
   UserOutlined,
@@ -10,6 +10,7 @@ import {
   PlusOutlined,
   BookOutlined,
   ScheduleOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons'
 import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
@@ -46,8 +47,8 @@ function ChatHistory() {
     }
   }
 
-  const handleContinueChat = (sessionId) => navigate(`/chat?goalId=${goalId}&sessionId=${sessionId}`)
-  const handleNewChat = () => navigate(`/chat?goalId=${goalId}`)
+  const handleContinueChat = (sessionId) => navigate(`/ai-tutor?goalId=${goalId}&sessionId=${sessionId}`)
+  const handleNewChat = () => navigate(`/ai-tutor?goalId=${goalId}`)
 
   const formatTime = (timeStr) => {
     if (!timeStr) return '未知时间'
@@ -74,6 +75,7 @@ function ChatHistory() {
       record.sessions.forEach(session => {
         allSessions.push({
           ...session,
+          recordId: record.id,  // 添加 record_id 用于删除
           recordDate: record.record_date,
           studyDuration: record.study_duration_minutes,
           lessonsCompleted: record.lessons_completed,
@@ -81,6 +83,30 @@ function ChatHistory() {
       })
     }
   })
+
+  // 删除学习记录
+  const handleDeleteRecord = (recordId, sessionId, e) => {
+    e?.stopPropagation()  // 阻止冒泡到继续学习
+    
+    Modal.confirm({
+      title: '确认删除',
+      content: '确定要删除这条学习记录吗？删除后将无法恢复。',
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await studyGoalAPI.deleteRecord(goalId, recordId)
+          message.success('删除成功')
+          // 重新加载记录列表
+          fetchChatHistory()
+        } catch (err) {
+          console.error('删除学习记录失败:', err)
+          message.error('删除失败')
+        }
+      }
+    })
+  }
 
   // 按时间降序排序
   allSessions.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
@@ -178,9 +204,27 @@ function ChatHistory() {
                   </div>
                 </div>
 
-                {/* Arrow */}
-                <div style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(99,102,241,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginLeft: 16, flexShrink: 0 }}>
-                  <RightOutlined style={{ color: '#6366f1', fontSize: 12 }} />
+                {/* Arrow and delete button */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 16, flexShrink: 0 }}>
+                  {/* Delete button */}
+                  <div
+                    onClick={(e) => handleDeleteRecord(session.recordId, session.session_id, e)}
+                    style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(239,68,68,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'all 0.2s' }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(239,68,68,0.15)'
+                      e.currentTarget.style.transform = 'scale(1.05)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'rgba(239,68,68,0.08)'
+                      e.currentTarget.style.transform = 'scale(1)'
+                    }}
+                  >
+                    <DeleteOutlined style={{ color: '#ef4444', fontSize: 14 }} />
+                  </div>
+                  {/* Arrow */}
+                  <div style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(99,102,241,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <RightOutlined style={{ color: '#6366f1', fontSize: 12 }} />
+                  </div>
                 </div>
               </div>
             </motion.div>

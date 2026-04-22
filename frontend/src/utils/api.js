@@ -314,6 +314,78 @@ export const studyGoalAPI = {
   delete: (goalId) => apiClient.delete(`/study-goals/${goalId}`),
   getProgress: (goalId) => apiClient.get(`/study-goals/${goalId}/progress`),
   getRecords: (goalId) => apiClient.get(`/study-goals/${goalId}/records`),  // 获取学习记录
+  deleteRecord: (goalId, recordId) => apiClient.delete(`/study-goals/${goalId}/records/${recordId}`),  // 删除学习记录
+  saveSession: (goalId, data) => apiClient.post(`/study-goals/${goalId}/session/save`, data),  // 保存学习会话（前端直接调用）
+  generateSummary: (goalId, data) => apiClient.post(`/study-goals/${goalId}/session/generate-summary`, data),  // 调用LLM生成个性化摘要
+  getSessionConversation: async (goalId, sessionId) => {
+    // 获取学习记录，在其中查找指定 sessionId 的对话记录
+    try {
+      const res = await apiClient.get(`/study-goals/${goalId}/records`)
+      console.log(`[API] 获取学习记录响应:`, res.data)
+      
+      if (res.data?.success && res.data?.data?.records) {
+        const records = res.data.data.records
+        console.log(`[API] 找到 ${records.length} 条学习记录`)
+        
+        for (const record of records) {
+          console.log(`[API] 检查记录 ${record.id}, conversations:`, record.conversations)
+          
+          // 后端返回的是 conversations 字段（不是 conversation_log）
+          if (record.conversations && Array.isArray(record.conversations)) {
+            console.log(`[API] 在记录 ${record.id} 中查找 session_id=${sessionId}`)
+            
+            const conversation = record.conversations.find(c => c.session_id === sessionId)
+            console.log(`[API] 找到的 conversation:`, conversation)
+            
+            if (conversation && conversation.messages) {
+              console.log(`[API] 找到 ${conversation.messages.length} 条对话消息`)
+              return { data: { success: true, conversation: conversation.messages } }
+            }
+          }
+        }
+        console.warn(`[API] 未找到 session_id=${sessionId} 的会话记录`)
+      }
+    } catch (err) {
+      console.error('[API] getSessionConversation 失败:', err)
+    }
+    return { data: { success: false, conversation: null } }
+  },
+  
+  // 生成个性化摘要并保存学习会话（前端直接调用）
+  generateSummaryAndSave: async (goalId, data) => {
+    try {
+      // 先调用 LLM 生成个性化摘要
+      const summaryRes = await apiClient.post(`/study-goals/${goalId}/session/generate-summary`, {
+        conversation_log: data.conversation_log,
+        goal_title: data.goal_title || '',
+      })
+      
+      let personalizedSummary = '学习记录已保存'
+      if (summaryRes.data?.success && summaryRes.data?.data?.summary) {
+        personalizedSummary = summaryRes.data.data.summary
+        console.log('[API] LLM生成个性化摘要成功:', personalizedSummary)
+      } else {
+        console.warn('[API] LLM生成摘要失败，使用默认摘要')
+      }
+      
+      // 保存到数据库
+      const saveRes = await apiClient.post(`/study-goals/${goalId}/session/save`, {
+        conversation_log: data.conversation_log,
+        summary: personalizedSummary,
+        study_duration_minutes: 0,
+        lessons_completed: 0,
+      })
+      
+      if (saveRes.data?.success) {
+        // 在返回中标记已保存，避免重复
+        return { data: { ...saveRes.data, _前端已保存: true } }
+      }
+      return saveRes
+    } catch (err) {
+      console.error('[API] generateSummaryAndSave 失败:', err)
+      throw err
+    }
+  },
 }
 
 // ============ 学情分析 API ============
