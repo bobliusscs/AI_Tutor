@@ -47,6 +47,7 @@ def _migrate_from_env() -> Dict[str, Any]:
         "dashscope_api_key": "",
         "tts_apis": [],
         "tts_model": "",
+        "custom_system_prompt": "",
     }
 
     # 读取 .env 文件

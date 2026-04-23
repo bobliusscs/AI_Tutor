@@ -1446,7 +1446,7 @@ function Chat() {
                   }
                   
                   // 检测是否为学习会话保存工具且成功
-                  // 前端直接调用 API 保存完整对话历史和个性化摘要
+                  // 先保存记录（不带摘要），清空消息后后台异步生成摘要
                   if (data.tool_call === 'save_study_summary' && data.tool_result) {
                     try {
                       const result = typeof data.tool_result === 'string'
@@ -1456,35 +1456,53 @@ function Chat() {
                         // 防重：确保同一个会话只保存一次学习记录
                         if (hasSavedStudyRef.current) {
                           console.log('[Chat] 学习记录已保存过，跳过重复保存')
-                          setStudySaved(true)
                         } else {
                           hasSavedStudyRef.current = true
-                          // 前端直接调用 API 保存完整对话历史
+                          // 前端调用 API 保存完整对话历史（不带摘要）
                           const currentMessages = messagesRef.current
-                          if (currentMessages.length > 0 && activeStudyGoalIdRef.current) {
+                          // 优先使用后端返回的 goal_id（后端会自动获取最近的学习目标），否则使用 URL 参数
+                          const goalIdToSave = result.goal_id || activeStudyGoalIdRef.current
+                          
+                          if (currentMessages.length > 0 && goalIdToSave) {
                             const conversationLog = currentMessages.map(m => ({
                               role: m.role,
                               content: m.content || '',
                               timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : new Date().toISOString()
                             }))
-                            
-                            console.log('[Chat] 前端直接保存学习会话，消息数:', conversationLog.length)
-                            
-                            // 调用后端 API 生成个性化摘要并保存
-                            studyGoalAPI.generateSummaryAndSave(activeStudyGoalIdRef.current, {
+
+                            console.log('[Chat] 前端保存学习会话（不带摘要），消息数:', conversationLog.length, ', goalId:', goalIdToSave)
+
+                            // 先保存记录（不带摘要）
+                            studyGoalAPI.saveSession(goalIdToSave, {
                               conversation_log: conversationLog,
-                              goal_title: goalTitle || '',
+                              study_duration_minutes: 0,
+                              lessons_completed: 0,
                             }).then(saveRes => {
-                              console.log('[Chat] 前端保存学习会话结果:', saveRes)
-                              if (saveRes.data?.success) {
-                                setStudySaved(true)
+                              console.log('[Chat] 学习记录保存结果:', saveRes)
+                              const sessionId = saveRes.data?.data?.session_id
+
+                              // 后台异步生成摘要并更新（不阻塞UI）
+                              if (sessionId) {
+                                studyGoalAPI.generateSummaryInBackground(
+                                  goalIdToSave,
+                                  {
+                                    conversation_log: conversationLog,
+                                    goal_title: goalTitle || '',
+                                    session_id: sessionId,
+                                  }
+                                ).then(bgRes => {
+                                  if (bgRes.data?.success && bgRes.data?.summary) {
+                                    message.success(`学习摘要已生成：${bgRes.data.summary}`)
+                                  }
+                                }).catch(err => {
+                                  console.error('[Chat] 后台生成摘要失败:', err)
+                                })
                               }
                             }).catch(err => {
-                              console.error('[Chat] 前端保存学习会话失败:', err)
-                              setStudySaved(true)  // 仍然标记为已保存
+                              console.error('[Chat] 保存学习会话失败:', err)
                             })
                           } else {
-                            setStudySaved(true)
+                            console.warn('[Chat] 无法保存学习记录：没有学习目标ID，当前goalId:', goalIdToSave)
                           }
                         }
                       }
@@ -1555,11 +1573,9 @@ function Chat() {
                   setIsVoiceInput(false)
                 }
 
-                // ── 学习记录保存完成：5秒后清空上下文并跳转 ──
-                // 注意：需要在 readStream 外部读取最新的 studySaved 状态，使用 ref 方式
-                // 由于 studySaved 是在 SSE 回调中通过 setStudySaved 设置的，
-                // 我们需要通过检查当前消息的 toolCalls 来判断是否需要跳转
-                // 使用 setTimeout 延迟5秒执行跳转
+                // ── 学习记录保存完成：清空上下文并返回起始状态 ──
+                // 当检测到 save_study_summary 工具调用成功时，
+                // 停止 TTS，短暂提示后清空消息返回起始状态
                 setTimeout(() => {
                   // 检查当前 AI 消息是否包含 save_study_summary 工具调用
                   const currentMessages = messagesRef.current
@@ -1578,10 +1594,10 @@ function Chat() {
                             audioQueueRef.current = null
                           }
                           setIsPlayingTTS(false)
-                          
-                          message.info('学习记录已保存，即将返回学习目标列表...')
-                          
-                          // 5秒后清空上下文并跳转
+
+                          message.info('学习记录已保存，返回起始状态...')
+
+                          // 1.5秒后清空上下文并返回起始状态
                           setTimeout(() => {
                             // 清空聊天上下文
                             setMessages([])
@@ -1589,10 +1605,8 @@ function Chat() {
                             setCanvasPanelVisible(false)
                             sessionStorage.removeItem(SESSION_STORAGE_KEY)
                             setStudySaved(false)
-                            
-                            // 跳转到学习目标列表
-                            navigate('/goals')
-                          }, 5000)
+                            hasSavedStudyRef.current = false
+                          }, 1500)
                         }
                       } catch (e) {
                         console.warn('[Chat] 检查学习记录保存状态失败:', e)

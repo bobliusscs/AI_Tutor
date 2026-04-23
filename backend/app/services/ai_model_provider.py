@@ -813,16 +813,32 @@ class OllamaProvider(BaseModelProvider):
         headers = {"Content-Type": "application/json"}
         
         # 直接使用原始消息
+        # Ollama gemma4 等模型可能不支持 tool_choice: "auto"，降级为不指定
         payload = {
             "model": self.model,
             "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
+            "tools": tools if tools else None,
             "stream": True
         }
+        # 移除None值（Ollama对null敏感）
+        if payload.get("tools") is None:
+            payload.pop("tools", None)
         
         _logger.info(f"[Ollama-Tools-Stream] 请求URL: {self.base_url}/v1/chat/completions")
         _logger.info(f"[Ollama-Tools-Stream] 模型: {self.model}, 消息数: {len(messages)}, 工具数: {len(tools)}")
+        
+        # 调试：打印实际发送的payload（帮助排查400错误）
+        _logger.debug(f"[Ollama-Tools-Stream] payload: {json.dumps(payload, ensure_ascii=False, indent=2)[:2000]}")
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "?")
+            content = msg.get("content")
+            if isinstance(content, list):
+                content_type = f"list[{len(content)}]"
+            else:
+                content_type = str(content)[:80] if content else "(null)"
+            has_tc = "tool_calls" in msg
+            has_tcid = "tool_call_id" in msg
+            _logger.debug(f"[Ollama-Tools-Stream] msg[{i}] role={role}, content={content_type}, tool_calls={has_tc}, tool_call_id={has_tcid}")
         
         transport = httpx.AsyncHTTPTransport(proxy=None)
         async with httpx.AsyncClient(transport=transport) as client:
@@ -2178,10 +2194,26 @@ class CustomProvider(BaseModelProvider):
         _logger.info(f"[DeepSeek] 模型: {self.model}")
         _logger.info(f"[DeepSeek] 消息数量: {len(messages)}")
         _logger.info(f"[DeepSeek] 工具数量: {len(tools) if tools else 0}")
+        
+        # 调试：打印完整payload以定位400错误
+        _logger.debug(f"[DeepSeek] payload: {json.dumps(payload, ensure_ascii=False)[:3000]}")
         for i, msg in enumerate(messages):
-            role = msg.get("role", "unknown")
-            content_len = len(str(msg.get("content", "")))
-            _logger.info(f"[DeepSeek] 消息[{i}] role={role}, content长度={content_len}")
+            role = msg.get("role", "?")
+            content = msg.get("content")
+            if isinstance(content, list):
+                content_type = f"list[{len(content)}]"
+            else:
+                content_type = str(content)[:100] if content else "(null)"
+            has_tc = "tool_calls" in msg
+            has_tcid = "tool_call_id" in msg
+            _logger.debug(f"[DeepSeek] msg[{i}] role={role}, content={content_type}, tool_calls={has_tc}, tool_call_id={has_tcid}")
+            if has_tc:
+                for j, tc in enumerate(msg.get("tool_calls", [])):
+                    tc_type = tc.get("type", "?")
+                    func = tc.get("function", {})
+                    func_name = func.get("name", "?")
+                    func_args_preview = str(func.get("arguments", ""))[:50]
+                    _logger.debug(f"[DeepSeek]   tool_calls[{j}]: type={tc_type}, function.name={func_name}, arguments={func_args_preview}...")
         if tools:
             for t in tools:
                 fname = t.get("function", {}).get("name", "unknown")
@@ -2250,6 +2282,29 @@ class CustomProvider(BaseModelProvider):
         
         _logger.info(f"[DeepSeek-Stream] 请求URL: {self.base_url}/chat/completions")
         _logger.info(f"[DeepSeek-Stream] 模型: {self.model}, 消息数: {len(messages)}, 工具数: {len(tools)}")
+        
+        # 调试：打印完整payload以定位400错误
+        _logger.debug(f"[DeepSeek-Stream] payload: {json.dumps(payload, ensure_ascii=False)[:3000]}")
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "?")
+            content = msg.get("content")
+            if isinstance(content, list):
+                content_type = f"list[{len(content)}]"
+            else:
+                content_type = str(content)[:100] if content else "(null)"
+            has_tc = "tool_calls" in msg
+            has_tcid = "tool_call_id" in msg
+            _logger.debug(f"[DeepSeek-Stream] msg[{i}] role={role}, content={content_type}, tool_calls={has_tc}, tool_call_id={has_tcid}")
+            # 打印tool_calls结构详情
+            if has_tc:
+                for j, tc in enumerate(msg.get("tool_calls", [])):
+                    tc_type = tc.get("type", "?")
+                    func = tc.get("function", {})
+                    func_name = func.get("name", "?")
+                    func_args_preview = str(func.get("arguments", ""))[:50]
+                    _logger.debug(f"[DeepSeek-Stream]   tool_calls[{j}]: type={tc_type}, function.name={func_name}, function.arguments={func_args_preview}...")
+            if has_tcid:
+                _logger.debug(f"[DeepSeek-Stream]   tool_call_id={msg.get('tool_call_id', '')[:30]}...")
         
         transport = httpx.AsyncHTTPTransport(proxy=None)
         async with httpx.AsyncClient(transport=transport) as client:

@@ -21,6 +21,12 @@ class SkillManager:
     
     SKILLS_DIR = ".agents/skills"
     
+    # 类级缓存：避免每次实例化都重新扫描文件系统（P1优化）
+    _skills_cache = None
+    _tools_cache = None
+    _cache_mtime = None
+    _cache_skills_dir = None
+    
     def __init__(self, db=None, student_id=None):
         """
         Args:
@@ -32,9 +38,11 @@ class SkillManager:
         self.skills = {}  # skill_name -> skill_info
         self.tools = {}   # tool_name -> tool_info
         self.tool_functions = {}  # tool_name -> function
+        # P2优化：缓存每个工具函数的参数签名，避免每次execute都inspect
+        self._tool_param_cache = {}  # tool_name -> set(param_names)
         
     def discover_and_load(self):
-        """自动发现并加载所有Skill"""
+        """自动发现并加载所有Skill（带类级缓存，避免重复文件IO）"""
         try:
             # 获取项目根目录
             project_root = Path(__file__).parent.parent.parent.parent
@@ -44,11 +52,37 @@ class SkillManager:
                 logger.warning(f"Skills目录不存在: {skills_path}")
                 return
             
+            # 计算目录最新mtime（任何SKILL.md变化都会改变）
+            current_mtime = 0
+            for skill_dir in skills_path.iterdir():
+                if skill_dir.is_dir():
+                    skill_md = skill_dir / "SKILL.md"
+                    if skill_md.exists():
+                        current_mtime = max(current_mtime, skill_md.stat().st_mtime)
+            
+            cache_key = str(skills_path)
+            
+            # 如果缓存有效，直接使用
+            if (SkillManager._skills_cache is not None and
+                SkillManager._cache_skills_dir == cache_key and
+                SkillManager._cache_mtime is not None and
+                SkillManager._cache_mtime >= current_mtime):
+                self.skills = SkillManager._skills_cache.copy()
+                self.tools = SkillManager._tools_cache.copy()
+                logger.info(f"使用Skill缓存: {len(self.skills)} 个Skill, {len(self.tools)} 个工具")
+                return
+            
             logger.info(f"开始扫描Skills目录: {skills_path}")
             
             for skill_dir in skills_path.iterdir():
                 if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
                     self._load_skill(skill_dir)
+            
+            # 更新类级缓存
+            SkillManager._skills_cache = self.skills.copy()
+            SkillManager._tools_cache = self.tools.copy()
+            SkillManager._cache_mtime = current_mtime
+            SkillManager._cache_skills_dir = cache_key
             
             logger.info(f"已加载 {len(self.skills)} 个Skill, {len(self.tools)} 个工具")
             
@@ -242,12 +276,21 @@ class SkillManager:
         return ""
     
     def register_tool_function(self, tool_name: str, func: Callable):
-        """注册工具函数实现"""
+        """注册工具函数实现（P2优化：预缓存参数签名）"""
         if tool_name not in self.tools:
             logger.warning(f"尝试注册未知工具: {tool_name}")
             return
         
         self.tool_functions[tool_name] = func
+        
+        # P2优化：预缓存参数签名，避免每次execute都调用inspect
+        import inspect
+        try:
+            sig = inspect.signature(func)
+            self._tool_param_cache[tool_name] = set(sig.parameters.keys())
+        except Exception:
+            self._tool_param_cache[tool_name] = set()
+        
         logger.info(f"注册工具函数: {tool_name}")
     
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -286,11 +329,15 @@ class SkillManager:
         
         try:
             func = self.tool_functions[tool_name]
-            
-            # 自动注入db和student_id
             import inspect
-            sig = inspect.signature(func)
-            params = sig.parameters
+            
+            # P2优化：使用预缓存的参数签名，避免每次execute都inspect反射
+            params = self._tool_param_cache.get(tool_name)
+            if params is None:
+                # 兜底：如果缓存未命中（不应该发生），回退到inspect
+                sig = inspect.signature(func)
+                params = set(sig.parameters.keys())
+                self._tool_param_cache[tool_name] = params
             
             call_args = arguments.copy()
             if 'db' in params and 'db' not in call_args:

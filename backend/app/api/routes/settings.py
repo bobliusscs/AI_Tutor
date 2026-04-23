@@ -1,6 +1,7 @@
 """
 设置 API 路由 - 管理多模型API配置和模块-模型映射
 """
+import os
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -59,6 +60,17 @@ class ModelConfigRequest(BaseModel):
     dashscope_api_key: Optional[str] = None
     tts_apis: List[TtsApiItem] = []
     tts_model: Optional[str] = None  # 选中的TTS API ID
+
+
+class SystemPromptRequest(BaseModel):
+    """保存系统提示词请求"""
+    custom_prompt: str = ""
+
+
+class GeneratePromptRequest(BaseModel):
+    """AI生成提示词请求"""
+    name: str = ""
+    description: str = ""
 
 
 # ========== API 接口 ==========
@@ -392,6 +404,138 @@ async def test_tts_connection(
             success=False,
             message=f"TTS 连接失败: {str(e)}",
             data={"connected": False}
+        )
+
+
+@router.get("/system-prompt", response_model=Response)
+async def get_system_prompt():
+    """
+    获取静态提示词配置
+    返回用户自定义静态提示词和默认静态提示词
+    动态提示词由后端自动拼接，不展示给前端
+    """
+    try:
+        config = load_model_config()
+        custom_prompt = config.get("custom_system_prompt", "")
+
+        # 读取默认静态模板 STATIC.md
+        default_static_prompt = ""
+        static_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            "app", "prompts", "bootstrap", "STATIC.md"
+        )
+        if os.path.exists(static_path):
+            with open(static_path, "r", encoding="utf-8") as f:
+                default_static_prompt = f.read()
+
+        return Response(
+            success=True,
+            message="获取静态提示词成功",
+            data={
+                "custom_prompt": custom_prompt,
+                "default_prompt": default_static_prompt,
+                "has_custom": bool(custom_prompt),
+            }
+        )
+    except Exception as e:
+        return Response(
+            success=False,
+            message=f"获取静态提示词失败: {str(e)}",
+            data=None
+        )
+
+
+@router.post("/system-prompt", response_model=Response)
+async def update_system_prompt(request: SystemPromptRequest):
+    """
+    保存自定义系统提示词
+    """
+    try:
+        config = load_model_config()
+        config["custom_system_prompt"] = request.custom_prompt.strip()
+        save_model_config(config)
+        
+        # 清除配置缓存，确保下次加载时读取最新值
+        clear_config_cache()
+        
+        return Response(
+            success=True,
+            message="系统提示词已保存",
+            data={"saved": True}
+        )
+    except Exception as e:
+        return Response(
+            success=False,
+            message=f"保存系统提示词失败: {str(e)}",
+            data=None
+        )
+
+
+@router.post("/generate-prompt", response_model=Response)
+async def generate_prompt(request: GeneratePromptRequest):
+    """
+    根据名称和描述，调用AI生成完整的Agent提示词
+    """
+    name = request.name.strip()
+    description = request.description.strip()
+
+    if not name:
+        return Response(success=False, message="模板名称不能为空", data=None)
+    if not description:
+        return Response(success=False, message="请提供简短描述以便AI生成提示词", data=None)
+
+    try:
+        from app.services.engine_manager import get_module_provider
+
+        ai_provider = get_module_provider("agent")
+
+        system_msg = {
+            "role": "system",
+            "content": (
+                "你是一个AI提示词工程师。根据用户提供的模板名称和简短描述，生成极简的AI家教系统提示词。\n\n"
+                "格式模板（严格遵循）：\n"
+                "# AI Tutor - <AI名称>\n\n"
+                "**角色**：<一句话描述>\n\n"
+                "## 回复规范\n"
+                "- 一句话回复，简洁直接\n"
+                "- <风格规范2，≤15字>\n"
+                "- <风格规范3，≤15字>\n"
+                "- <风格规范4，≤15字>\n\n"
+                "规则：\n"
+                "1. 角色定义必须用 **角色** 开头，后跟一句话描述\n"
+                "2. 回复规范首条必须是：一句话回复，简洁直接\n"
+                "3. 其余规范3-4条，每条不超过15字\n"
+                "4. 总长度60-150字\n"
+                "5. 只输出提示词，不加解释"
+            )
+        }
+        user_msg = {
+            "role": "user",
+            "content": f"模板名称：{name}\n简短描述：{description}"
+        }
+
+        result = await ai_provider.chat([system_msg, user_msg], temperature=0.8)
+
+        # 清理可能的多余格式
+        generated = result.strip()
+        if generated.startswith('```'):
+            lines = generated.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            generated = '\n'.join(lines).strip()
+
+        return Response(
+            success=True,
+            message="提示词生成成功",
+            data={"prompt": generated}
+        )
+    except Exception as e:
+        return Response(
+            success=False,
+            message=f"AI生成提示词失败: {str(e)}",
+            data=None
         )
 
 

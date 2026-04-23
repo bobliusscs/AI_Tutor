@@ -13,6 +13,7 @@ import GoalChatHistory from './pages/goal/ChatHistory'
 import Chat from './pages/Chat'
 import Settings from './pages/Settings'
 import SkillManagement from './pages/SkillManagement'
+import AgentPrompt from './pages/AgentPrompt'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { PageTransition } from './components/PageTransition'
 
@@ -36,6 +37,9 @@ function App() {
 
           {/* Skill管理页面 */}
           <Route path="/skills" element={<SkillManagement />} />
+
+          {/* Agent提示词页面 */}
+          <Route path="/agent-prompt" element={<AgentPrompt />} />
           
           {/* 学习目标管理 - 重定向到 AI Tutor */}
           <Route path="/goals" element={<Navigate to="/ai-tutor" replace />} />

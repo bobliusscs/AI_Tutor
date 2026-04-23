@@ -17,8 +17,16 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 from .orchestrator import ToolOrchestrator
+from app.core.model_config import load_model_config
 
 logger = logging.getLogger(__name__)
+
+# 模块级缓存：SYSTEM.md模板（基于文件mtime，避免每次对话都读磁盘）
+_system_prompt_template_cache = None
+_system_prompt_template_mtime = None
+_system_prompt_template_path = None
+# 自定义提示词缓存
+_custom_prompt_cache = None
 
 
 class SimpleAgent:
@@ -59,6 +67,37 @@ class SimpleAgent:
         # 最大工具调用轮数(防止无限循环)
         self.max_tool_rounds = 5
 
+    async def _execute_single_tool(
+        self,
+        tool_call: dict,
+        failed_tool_names: set
+    ) -> tuple:
+        """
+        执行单个工具调用，用于并行执行。
+        
+        Returns:
+            (tool_name, result) 元组
+        """
+        tool_name = tool_call["function"]["name"]
+        try:
+            arguments = json.loads(tool_call["function"]["arguments"])
+        except json.JSONDecodeError:
+            arguments = {}
+        
+        logger.info(f"[Agent] 执行工具: {tool_name}")
+        result = await self.orchestrator.execute_tool(tool_name, arguments)
+        
+        # 记录失败的工具
+        try:
+            result_data = json.loads(result) if isinstance(result, str) else result
+            if isinstance(result_data, dict) and not result_data.get("success"):
+                failed_tool_names.add(tool_name)
+                logger.info(f"[Agent] 工具 {tool_name} 返回失败，已加入失败列表")
+        except Exception:
+            pass
+        
+        return tool_name, result
+
     async def run(
         self,
         message: str,
@@ -84,20 +123,20 @@ class SimpleAgent:
             # 构建消息列表
             messages = self._build_messages(message, history, learning_context, images, documents, videos, audios)
 
-            # 调试：打印完整消息和原始history
-            logger.info(f"[Agent] 原始history数量: {len(history) if history else 0}")
-            if history:
-                for idx, h in enumerate(history):
-                    logger.info(f"[Agent] history[{idx}] = {json.dumps(h, ensure_ascii=False)[:300]}")
-            for idx, msg in enumerate(messages):
-                role = msg.get("role", "unknown")
-                content = msg.get("content", "")
-                content_preview = str(content)[:200] if content else "(empty)"
-                extra_keys = [k for k in msg.keys() if k not in ("role", "content")]
-                logger.info(f"[Agent] 消息[{idx}] role={role}, content长度={len(str(content))}, 额外字段={extra_keys}, preview={content_preview}")
-                # 如果有额外字段，打印其内容
-                for k in extra_keys:
-                    logger.info(f"[Agent]   额外字段 {k} = {json.dumps(msg[k], ensure_ascii=False)[:300] if isinstance(msg[k], (dict, list)) else msg[k]}")
+            # 调试：仅在DEBUG级别打印完整消息（避免生产环境CPU开销）
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"[Agent] 原始history数量: {len(history) if history else 0}")
+                if history:
+                    for idx, h in enumerate(history):
+                        logger.debug(f"[Agent] history[{idx}] = {json.dumps(h, ensure_ascii=False)[:300]}")
+                for idx, msg in enumerate(messages):
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    content_preview = str(content)[:200] if content else "(empty)"
+                    extra_keys = [k for k in msg.keys() if k not in ("role", "content")]
+                    logger.debug(f"[Agent] 消息[{idx}] role={role}, content长度={len(str(content))}, 额外字段={extra_keys}, preview={content_preview}")
+                    for k in extra_keys:
+                        logger.debug(f"[Agent]   额外字段 {k} = {json.dumps(msg[k], ensure_ascii=False)[:300] if isinstance(msg[k], (dict, list)) else msg[k]}")
 
             # 获取工具定义
             tools = self.orchestrator.get_all_tools()
@@ -145,29 +184,15 @@ class SimpleAgent:
                         "status_message": f"正在调用工具: {', '.join(tool_names)}"
                     }
                     
-                    # 执行所有工具调用
-                    tool_results = []
-                    for tool_call in tool_calls_detected:
-                        tool_name = tool_call["function"]["name"]
-                        try:
-                            arguments = json.loads(tool_call["function"]["arguments"])
-                        except json.JSONDecodeError:
-                            arguments = {}
-                        
-                        logger.info(f"[Agent] 执行工具: {tool_name}")
-                        result = await self.orchestrator.execute_tool(tool_name, arguments)
-                        tool_results.append(result)
-                        
-                        # 记录失败的工具
-                        try:
-                            result_data = json.loads(result) if isinstance(result, str) else result
-                            if isinstance(result_data, dict) and not result_data.get("success"):
-                                failed_tool_names.add(tool_name)
-                                logger.info(f"[Agent] 工具 {tool_name} 返回失败，已加入失败列表")
-                        except:
-                            pass
-                        
-                        # 将工具调用结果通过SSE发送给前端
+                    # 并行执行所有工具调用（P0优化：用asyncio.gather替代for循环串行）
+                    tool_tasks = [
+                        self._execute_single_tool(tc, failed_tool_names)
+                        for tc in tool_calls_detected
+                    ]
+                    tool_results = await asyncio.gather(*tool_tasks)
+                    
+                    # 按原始调用顺序yield结果，保持前端展示一致性
+                    for tool_name, result in tool_results:
                         yield {
                             "tool_call": tool_name,
                             "tool_result": result
@@ -248,9 +273,17 @@ class SimpleAgent:
             yield {"done": True, "full_response": full_response}
 
         except Exception as e:
+            error_str = str(e)
             logger.error("Agent run error: %s", e, exc_info=True)
-            yield {"error": str(e)}
-            yield {"done": True, "full_response": f"处理时遇到问题:{str(e)}"}
+            
+            # 网络错误给出友好提示
+            if "timeout" in error_str.lower() or "502" in error_str:
+                user_msg = "网络连接不稳定，无法连接到AI服务。请检查：1) Ollama是否正常运行；2) 网络连接是否正常；3) 模型配置是否正确。"
+            else:
+                user_msg = f"处理时遇到问题: {error_str}"
+            
+            yield {"error": user_msg}
+            yield {"done": True, "full_response": user_msg}
 
     def _load_learning_context(self, current_goal: dict = None) -> dict:
         """加载学习上下文（包含用户信息、学习目标和历史学习记录）"""
@@ -288,6 +321,16 @@ class SimpleAgent:
                 StudyGoal.status == StudyGoalStatus.ACTIVE.value
             ).order_by(StudyGoal.created_at.desc()).all()
 
+            # P1优化：批量查询所有LearningPlan，避免N+1查询
+            goal_ids = [g.id for g in goals]
+            plans_map = {}
+            if goal_ids:
+                for plan in self.db.query(LearningPlan).filter(
+                    LearningPlan.study_goal_id.in_(goal_ids),
+                    LearningPlan.student_id == self.student_id
+                ).all():
+                    plans_map[plan.study_goal_id] = plan
+
             goals_info = []
             current_goal_id = current_goal.get("id") if current_goal else None
 
@@ -306,11 +349,8 @@ class SimpleAgent:
                         goal.mastered_points / goal.total_knowledge_points * 100, 1
                     )
                 
-                # 从学习计划获取课时进度
-                plan = self.db.query(LearningPlan).filter(
-                    LearningPlan.study_goal_id == goal.id,
-                    LearningPlan.student_id == self.student_id
-                ).first()
+                # 从缓存的plans_map获取课时进度（避免N+1查询）
+                plan = plans_map.get(goal.id)
                 if plan:
                     goal_info["total_lessons"] = plan.total_lessons or 0
                     goal_info["completed_lessons"] = plan.completed_lessons or 0
@@ -428,6 +468,8 @@ class SimpleAgent:
                         })
                     
                     # 工具调用消息：tool_calls + tool消息已足够让LLM知道之前调过工具
+                    # OpenAI规范：带tool_calls的assistant消息content必须为null
+                    # Ollama兼容层也要求此格式，不能是空字符串
                     messages.append({
                         "role": "assistant",
                         "content": content.strip() if content.strip() else None,
@@ -873,16 +915,49 @@ class SimpleAgent:
             return ""
 
     def _build_system_prompt(self, learning_context: dict = None) -> str:
-        """构建系统提示词 - 从SYSTEM.md加载并替换动态部分"""
+        """构建系统提示词 - 优先使用用户自定义提示词，否则使用STATIC.md+DYNAMIC.md模板（带模块级缓存）"""
+        global _system_prompt_template_cache, _system_prompt_template_mtime, _system_prompt_template_path, _custom_prompt_cache
         try:
-            # 读取SYSTEM.md模板
-            system_md_path = Path(__file__).parent.parent / "prompts" / "bootstrap" / "SYSTEM.md"
-            if system_md_path.exists():
-                with open(system_md_path, "r", encoding="utf-8") as f:
-                    template = f.read()
+            # 优先读取用户自定义提示词（从 model_config.json）
+            config = load_model_config()
+            custom_prompt = config.get("custom_system_prompt", "")
+            
+            # 如果有自定义提示词，使用它
+            if custom_prompt and custom_prompt.strip():
+                template = custom_prompt.strip()
+                logger.info("[Agent] 使用用户自定义提示词，长度: %d 字符", len(template))
             else:
-                # 兜底:使用默认模板
-                template = self._get_fallback_template()
+                # 没有自定义提示词，回退到 STATIC.md + DYNAMIC.md
+                prompts_dir = Path(__file__).parent.parent / "prompts" / "bootstrap"
+                static_md_path = prompts_dir / "STATIC.md"
+                dynamic_md_path = prompts_dir / "DYNAMIC.md"
+
+                # 计算两个文件的最新修改时间，任一变更则刷新缓存
+                latest_mtime = 0
+                for p in [static_md_path, dynamic_md_path]:
+                    if p.exists():
+                        latest_mtime = max(latest_mtime, p.stat().st_mtime)
+
+                cache_key = f"{static_md_path}|{dynamic_md_path}"
+                if (_system_prompt_template_cache is None or
+                    _system_prompt_template_path != cache_key or
+                    _system_prompt_template_mtime != latest_mtime):
+                    # 拼接 STATIC.md + DYNAMIC.md 作为完整模板
+                    parts = []
+                    if static_md_path.exists():
+                        with open(static_md_path, "r", encoding="utf-8") as f:
+                            parts.append(f.read().strip())
+                    if dynamic_md_path.exists():
+                        with open(dynamic_md_path, "r", encoding="utf-8") as f:
+                            parts.append(f.read().strip())
+                    if parts:
+                        _system_prompt_template_cache = "\n\n".join(parts)
+                    else:
+                        _system_prompt_template_cache = self._get_fallback_template()
+                    _system_prompt_template_mtime = latest_mtime
+                    _system_prompt_template_path = cache_key
+                    logger.info("[Agent] 系统提示词模板缓存已更新(STATIC+DYNAMIC)")
+                template = _system_prompt_template_cache
             
             # 1. 构建用户信息
             student_text = ""
@@ -954,6 +1029,21 @@ class SimpleAgent:
             tools_desc = self.orchestrator.get_tools_description()
             prompt = prompt.replace("{{tools}}", tools_desc)
             
+            # 6. 如果用户有自定义提示词，自动附加动态上下文（因为自定义提示词通常不包含占位符）
+            if custom_prompt and custom_prompt.strip():
+                dynamic_section = f"""
+
+## 当前用户信息
+{student_text.strip()}
+
+## 学习目标概览
+{goals_text}
+
+## 工具说明
+{tools_desc}
+"""
+                prompt = prompt + dynamic_section
+            
             # 调试日志：检查消息大小和占位符
             total_chars = len(prompt)
             logger.info(f"[Agent] 系统提示词大小: {total_chars} 字符")
@@ -970,7 +1060,7 @@ class SimpleAgent:
             return prompt.strip()
             
         except Exception as e:
-            logger.warning("加载SYSTEM.md失败，使用默认模板: %s", e)
+            logger.warning("加载系统提示词失败，使用默认模板: %s", e)
             return self._get_fallback_template()
     
     async def _call_llm_with_tools(self, messages: list, tools: list) -> dict:
@@ -1042,6 +1132,28 @@ class SimpleAgent:
             {"type": "tool_calls", "tool_calls": list} - 完整的工具调用列表
         """
         try:
+            # 验证和清理消息格式，确保兼容DeepSeek/OpenAI/Ollama
+            messages = self._validate_and_clean_messages(messages, tools)
+            
+            # 调试：打印实际发送给LLM的消息格式（帮助排查400错误）
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"[LLM-Stream] messages数量={len(messages)}, tools数量={len(tools)}")
+                for i, m in enumerate(messages):
+                    role = m.get("role", "?")
+                    content = m.get("content")
+                    content_preview = str(content)[:80] if content else "(null/empty)"
+                    has_tool_calls = "tool_calls" in m
+                    has_tool_call_id = "tool_call_id" in m
+                    logger.debug(f"[LLM-Stream] msg[{i}] role={role}, content_preview={content_preview}, has_tool_calls={has_tool_calls}, has_tool_call_id={has_tool_call_id}")
+                    if has_tool_calls:
+                        for j, tc in enumerate(m.get("tool_calls", [])):
+                            tc_type = tc.get("type", "?")
+                            func = tc.get("function", {})
+                            func_name = func.get("name", "?") if isinstance(func, dict) else f"NOT_DICT:{type(func).__name__}"
+                            logger.debug(f"[LLM-Stream]   tool_calls[{j}]: type={tc_type}, function={func_name}")
+                    if has_tool_call_id:
+                        logger.debug(f"[LLM-Stream]   tool_call_id={str(m.get('tool_call_id', ''))[:50]}")
+            
             if hasattr(self.ai_provider, "chat_with_tools_stream"):
                 async for event in self.ai_provider.chat_with_tools_stream(messages, tools):
                     if cancel_event and cancel_event.is_set():
@@ -1066,9 +1178,169 @@ class SimpleAgent:
                             return
                         yield {"type": "content", "content": char}
         except Exception as e:
+            error_str = str(e)
             logger.error(f"流式调用LLM失败: {e}", exc_info=True)
-            yield {"type": "content", "content": f"调用AI服务时遇到问题: {str(e)}"}
+            
+            # 区分网络错误，给出更友好的提示
+            if "502" in error_str or "Bad Gateway" in error_str:
+                friendly_msg = "AI服务网关错误（502），可能是模型服务配置问题或网络不稳定，请检查Ollama是否正常运行。"
+            elif "timeout" in error_str.lower() or "TLS handshake" in error_str:
+                friendly_msg = "连接AI服务超时，请检查网络连接或模型服务状态。"
+            elif "Connection" in error_str and "refused" in error_str:
+                friendly_msg = "无法连接到AI服务，请确认Ollama已启动且端口正确。"
+            else:
+                friendly_msg = f"调用AI服务时遇到问题: {error_str}"
+            
+            yield {"type": "content", "content": friendly_msg}
     
+    def _validate_and_clean_messages(self, messages: list, tools: list = None) -> list:
+        """验证并清理消息列表，确保兼容DeepSeek/OpenAI/Ollama的API格式要求
+        
+        关键规则：
+        1. tool角色消息必须有tool_call_id，且content必须为string
+        2. assistant角色消息带tool_calls时，content必须为null
+        3. tool_calls数组中每个元素必须有type:function和function:{name,arguments}
+        4. 不允许在tool消息后紧跟非tool消息（如果前一条是assistant+tool_calls）
+        """
+        cleaned = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            role = msg.get("role", "")
+            
+            if role == "system":
+                # system消息：content必须是string
+                content = msg.get("content", "")
+                if not isinstance(content, str):
+                    content = str(content)
+                cleaned.append({"role": "system", "content": content})
+                
+            elif role == "user":
+                # user消息：content可以是string或list(content blocks)
+                content = msg.get("content", "")
+                if content is None:
+                    content = ""
+                cleaned.append({"role": "user", "content": content})
+                
+            elif role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                content = msg.get("content")
+                
+                if tool_calls:
+                    # 带tool_calls的assistant消息
+                    # 验证并清理每个tool_call
+                    clean_tool_calls = []
+                    for tc in tool_calls:
+                        if not isinstance(tc, dict):
+                            logger.warning(f"[Validate] 跳过非法tool_call: {type(tc).__name__} = {str(tc)[:100]}")
+                            continue
+                        
+                        # 确保function是dict且包含name和arguments
+                        func = tc.get("function")
+                        if not isinstance(func, dict):
+                            logger.warning(f"[Validate] tool_call.function不是dict: {type(func).__name__} = {str(func)[:100]}")
+                            # 可能是前端格式的toolCall被直接传入了
+                            # 尝试从其他字段恢复
+                            name = tc.get("name") or tc.get("toolName", "")
+                            if name:
+                                func = {"name": name, "arguments": tc.get("arguments", "{}")}
+                            else:
+                                continue
+                        
+                        # 确保name是string
+                        func_name = func.get("name", "")
+                        if not isinstance(func_name, str) or not func_name:
+                            logger.warning(f"[Validate] tool_call.function.name无效: {func_name}")
+                            continue
+                        
+                        # 确保arguments是string(JSON)
+                        func_args = func.get("arguments", "{}")
+                        if not isinstance(func_args, str):
+                            func_args = json.dumps(func_args, ensure_ascii=False)
+                        
+                        clean_tool_calls.append({
+                            "id": tc.get("id", f"call_{len(clean_tool_calls)}"),
+                            "type": "function",
+                            "function": {
+                                "name": func_name,
+                                "arguments": func_args
+                            }
+                        })
+                    
+                    if clean_tool_calls:
+                        # content必须为null（OpenAI规范）
+                        cleaned.append({
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": clean_tool_calls
+                        })
+                    else:
+                        # 所有tool_call都无效，只保留纯assistant消息
+                        if content:
+                            cleaned.append({"role": "assistant", "content": content})
+                        
+                else:
+                    # 普通assistant消息
+                    if content is None:
+                        content = ""
+                    elif not isinstance(content, str):
+                        content = str(content)
+                    if content:
+                        cleaned.append({"role": "assistant", "content": content})
+                    
+            elif role == "tool":
+                # tool消息：必须有tool_call_id和content(string)
+                tool_call_id = msg.get("tool_call_id", "")
+                content = msg.get("content", "")
+                
+                if not tool_call_id:
+                    logger.warning(f"[Validate] tool消息缺少tool_call_id，跳过")
+                    i += 1
+                    continue
+                
+                # content必须是string
+                if content is None:
+                    content = ""
+                elif not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=False) if isinstance(content, (dict, list)) else str(content)
+                
+                cleaned.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": content
+                })
+            else:
+                logger.warning(f"[Validate] 跳过未知角色: {role}")
+            
+            i += 1
+        
+        # 后处理：确保assistant+tool_calls后的消息必须是tool角色
+        # 如果assistant带tool_calls但后面没有对应的tool消息，补一个空的
+        final = []
+        for j, msg in enumerate(cleaned):
+            final.append(msg)
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # 检查后续消息是否都是tool消息
+                tool_call_ids = {tc["id"] for tc in msg["tool_calls"]}
+                covered_ids = set()
+                k = j + 1
+                while k < len(cleaned) and cleaned[k].get("role") == "tool":
+                    covered_ids.add(cleaned[k].get("tool_call_id"))
+                    k += 1
+                
+                # 为未覆盖的tool_call_id补充空的tool消息
+                missing_ids = tool_call_ids - covered_ids
+                for mid in missing_ids:
+                    logger.warning(f"[Validate] 补充缺失的tool消息: {mid}")
+                    final.append({
+                        "role": "tool",
+                        "tool_call_id": mid,
+                        "content": "{}"
+                    })
+        
+        logger.info(f"[Validate] 消息清理: {len(messages)} -> {len(final)} 条")
+        return final
+
     def _get_fallback_template(self) -> str:
         """兜底模板"""
         return """你是小智，AI学习助手。使命:引导学生完成学习目标。

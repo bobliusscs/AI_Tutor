@@ -951,3 +951,89 @@ async def generate_session_summary(
             message=result.get("error", "生成摘要失败"),
             data={"summary": result.get("summary", "")}
         )
+
+
+@router.post("/{goal_id}/session/update-summary", response_model=Response)
+async def update_session_summary(
+    goal_id: int,
+    request_data: dict,
+    current_student_id: int = Depends(get_current_student_id),
+    db: Session = Depends(get_db)
+):
+    """
+    更新已有学习会话的摘要（用于后台异步生成摘要后更新）
+
+    Args:
+        goal_id: 学习目标ID
+        request_data: 包含 session_id, summary 字段
+    """
+    import json
+    from app.models.study_record import StudyRecord
+    from datetime import date
+
+    # 验证目标存在且属于当前学生
+    goal = db.query(StudyGoal).filter(
+        StudyGoal.id == goal_id,
+        StudyGoal.student_id == current_student_id
+    ).first()
+
+    if not goal:
+        raise HTTPException(status_code=404, detail="学习目标不存在")
+
+    session_id = request_data.get('session_id')
+    summary = request_data.get('summary', '')
+
+    if not session_id:
+        return Response(
+            success=False,
+            message="session_id 不能为空"
+        )
+
+    today = date.today()
+
+    # 查找当天的学习记录
+    record = db.query(StudyRecord).filter(
+        StudyRecord.student_id == current_student_id,
+        StudyRecord.goal_id == goal_id,
+        StudyRecord.record_date == today
+    ).first()
+
+    if not record:
+        return Response(
+            success=False,
+            message="未找到今天的学习记录"
+        )
+
+    # 解析现有会话摘要
+    existing_sessions = []
+    if record.session_summary:
+        try:
+            existing_sessions = json.loads(record.session_summary)
+            if not isinstance(existing_sessions, list):
+                existing_sessions = []
+        except json.JSONDecodeError:
+            existing_sessions = []
+
+    # 查找并更新对应 session
+    updated = False
+    for s in existing_sessions:
+        if s.get('session_id') == session_id:
+            s['summary'] = summary
+            updated = True
+            break
+
+    if not updated:
+        return Response(
+            success=False,
+            message=f"未找到 session_id={session_id} 的会话记录"
+        )
+
+    # 保存
+    record.session_summary = json.dumps(existing_sessions, ensure_ascii=False)
+    db.commit()
+
+    return Response(
+        success=True,
+        message="摘要更新成功",
+        data={"session_id": session_id, "summary": summary}
+    )

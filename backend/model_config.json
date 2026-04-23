@@ -37,11 +37,11 @@
       "supports_audio": false
     },
     {
-      "id": "temp_1776610614327",
-      "name": "云端Ollama",
+      "id": "temp_1776944953539",
+      "name": "本地Ollama",
       "type": "ollama",
       "base_url": "http://localhost:11434",
-      "model": "glm-5:cloud",
+      "model": "minimax-m2.7:cloud",
       "api_key": "",
       "supports_thinking": false,
       "supports_vision": false,
@@ -96,5 +96,6 @@
       "voice": "zh-CN-YunxiNeural"
     }
   ],
-  "tts_model": "temp_tts_1776610672495"
+  "tts_model": "model_4fd3fc48",
+  "custom_system_prompt": "# AI Tutor - 幽默导师\n\n**角色**：幽默风趣的AI家教，用段子讲知识点\n\n## 回复规范\n- 一句话回复，简洁直接\n- 荤段子调节气氛\n- 笑点藏在知识里\n- 保持适度不过火"
 }

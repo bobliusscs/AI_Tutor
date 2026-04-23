@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 async def save_study_summary(
     db: Session,
     student_id: int,
-    goal_id: int,
+    goal_id: int = None,
     conversation_log: str = "",
     summary: str = "",
     study_duration_minutes: int = 0,
@@ -40,7 +40,7 @@ async def save_study_summary(
     Args:
         db: 数据库会话
         student_id: 学生ID
-        goal_id: 学习目标ID
+        goal_id: 学习目标ID（可选，如果为空则自动获取最近的学习目标）
         conversation_log: 完整对话记录（JSON字符串）
         summary: AI生成的会话摘要（100字左右）。**可为空字符串**，前端会异步生成个性化摘要
         study_duration_minutes: 学习时长（分钟）
@@ -53,6 +53,33 @@ async def save_study_summary(
         保存结果 {"success": true/false, "message": "...", "record_id": ...}
     """
     try:
+        # 如果 goal_id 为空，尝试自动获取该学生最近的学习目标
+        if not goal_id:
+            try:
+                from app.models.study_goal import StudyGoal, StudyGoalStatus
+                latest_goal = db.query(StudyGoal).filter(
+                    StudyGoal.student_id == student_id,
+                    StudyGoal.status == StudyGoalStatus.ACTIVE.value
+                ).order_by(StudyGoal.updated_at.desc()).first()
+                
+                if latest_goal:
+                    goal_id = latest_goal.id
+                    logger.info(f"[StudySession] 自动获取最近学习目标: goal_id={goal_id}")
+                else:
+                    logger.warning(f"[StudySession] 无法获取学习目标: 该学生没有活跃的学习目标")
+                    return {
+                        "success": False,
+                        "error": "无法获取学习目标，学生没有活跃的学习目标",
+                        "message": "无法保存学习记录：没有找到活跃的学习目标"
+                    }
+            except Exception as e:
+                logger.error(f"[StudySession] 自动获取学习目标失败: {e}")
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "message": "获取学习目标失败"
+                }
+        
         # 生成会话 ID
         current_session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -64,13 +91,15 @@ async def save_study_summary(
             "message": "请前端保存学习记录",
             "record_id": None,
             "session_id": current_session_id,
+            "goal_id": goal_id,  # 包含自动获取的 goal_id
             "_前端保存": True,  # 标记前端需要保存
             "_conversation_log_needed": True  # 标记需要前端传递对话历史
         }
 
     except Exception as e:
         logger.error(f"[StudySession] 保存会话摘要失败: {e}", exc_info=True)
-        db.rollback()
+        # Bug修复：移除db.rollback()。此工具函数本身不执行数据库写入，
+        # 只返回标记让前端处理保存。随意rollback可能破坏调用方的transaction。
         return {
             "success": False,
             "error": str(e),

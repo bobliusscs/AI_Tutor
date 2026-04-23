@@ -679,6 +679,29 @@ function MainLayout() {
                 </motion.button>
 
                 <motion.button
+                  whileHover={{ backgroundColor: 'rgba(16,185,129,0.08)' }}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '8px 12px',
+                    border: 'none',
+                    background: 'transparent',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                  onClick={() => {
+                    navigate('/agent-prompt')
+                    setProfileMenuVisible(false)
+                  }}
+                >
+                  <FileTextOutlined style={{ color: '#10b981', fontSize: 14 }} />
+                  <span style={{ fontSize: 13, color: '#111827', fontWeight: 500 }}>Agent提示词</span>
+                </motion.button>
+
+                <motion.button
                   whileHover={{ backgroundColor: 'rgba(245,158,11,0.08)' }}
                   style={{
                     width: '100%',
