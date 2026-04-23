@@ -7,6 +7,7 @@ import {
   LockOutlined,
   ReloadOutlined,
   InfoCircleOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
@@ -303,18 +304,46 @@ function SkillManagement() {
                   label: (
                     <span style={{ fontSize: 14 }}>
                       <Badge count={availableSkills.length} offset={[8, 0]} style={{ backgroundColor: '#52c41a' }}>
-                        可安装
+                        扩展
                       </Badge>
                     </span>
                   ),
                   children: (
                     <div style={{ minHeight: 200 }}>
                       {availableSkills.length === 0 ? (
-                        <Empty
-                          image={Empty.PRESENTED_IMAGE_SIMPLE}
-                          description="已安装所有可用Skill"
-                          style={{ padding: 40 }}
-                        />
+                        <div style={{ padding: '20px 0', textAlign: 'center' }}>
+                          <div style={{ 
+                            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                            borderRadius: 12,
+                            padding: '24px 20px',
+                            color: '#fff',
+                            marginBottom: 16
+                          }}>
+                            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
+                              <GlobalOutlined style={{ marginRight: 8 }} />
+                              开源Skill市场
+                            </div>
+                            <div style={{ fontSize: 13, opacity: 0.9, marginBottom: 16, lineHeight: 1.6 }}>
+                              访问开源社区获取更多AI Tutor技能扩展
+                            </div>
+                            <Button
+                              type="default"
+                              size="small"
+                              icon={<GlobalOutlined />}
+                              style={{ 
+                                background: 'rgba(255,255,255,0.2)',
+                                border: '1px solid rgba(255,255,255,0.4)',
+                                color: '#fff'
+                              }}
+                              onClick={() => window.open('https://qoder.com/marketplace', '_blank')}
+                            >
+                              访问 Skill 市场
+                            </Button>
+                          </div>
+                          <div style={{ fontSize: 13, color: '#94a3b8' }}>
+                            也可通过开发自定义Skill扩展系统功能
+                          </div>
+                        </div>
                       ) : (
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
                           {availableSkills.map(renderAvailableCard)}
@@ -333,9 +362,9 @@ function SkillManagement() {
               <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.7 }}>
                 <strong>Skill 说明</strong>
                 <ul style={{ margin: '8px 0 0 0', paddingLeft: 18 }}>
-                  <li>核心Skill（课件交付、习题交付）为系统内置功能，无法卸载</li>
-                  <li>学习Skill（学习交互、学习计划等）和专项Skill（数学、英语等）为扩展模块，可按需安装和卸载</li>
-                  <li>安装/卸载Skill后，新会话将自动使用更新后的Skill配置</li>
+                  <li>核心Skill（课件交付、习题交付、学习会话管理）为系统内置功能，无法卸载</li>
+                  <li>系统仅保留三个核心Skill，支持完整的课件学习、习题练习和学习历史管理功能</li>
+                  <li>新会话将自动使用这些内置Skill配置</li>
                 </ul>
               </div>
             </div>

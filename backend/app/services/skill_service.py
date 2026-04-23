@@ -14,10 +14,11 @@ class SkillService:
     # Skills目录相对于项目根目录
     SKILLS_DIR = ".agents/skills"
 
-    # 内置Skill定义（不可卸载）- 仅课件交付与习题交付为核心交付Skill
+    # 内置Skill定义（不可卸载）
     BUILTIN_SKILLS = [
         "lesson-ppt-delivery",
         "section-exercise-delivery",
+        "study-session-management",
     ]
 
     # 预设Skill库（可安装的Skill）
@@ -26,7 +27,7 @@ class SkillService:
         {
             "id": "lesson-ppt-delivery",
             "name": "课件交付",
-            "description": "获取课件内容并展示到前端，支持按章节和课时定位课件",
+            "description": "获取课件内容并展示到前端",
             "category": "core",
             "version": "3.1.0",
             "builtin": True,
@@ -34,68 +35,18 @@ class SkillService:
         {
             "id": "section-exercise-delivery",
             "name": "习题交付",
-            "description": "获取自适应难度习题并展示到前端，支持按章节定位习题",
+            "description": "获取自适应难度习题并展示到前端",
             "category": "core",
             "version": "2.1.0",
             "builtin": True,
         },
-        # 可安装可卸载的扩展Skill
         {
-            "id": "aitutor-learning",
-            "name": "学习交互",
-            "description": "保存长期记忆并结合进度数据提供个性化学习引导",
-            "category": "learning",
+            "id": "study-session-management",
+            "name": "学习会话管理",
+            "description": "保存学习摘要和加载历史学习记录",
+            "category": "core",
             "version": "1.0",
-            "builtin": False,
-        },
-        {
-            "id": "aitutor-plan",
-            "name": "学习计划",
-            "description": "管理和展示学习计划的章-节-课时结构，包含课时内容获取功能",
-            "category": "learning",
-            "version": "1.0",
-            "builtin": False,
-        },
-        {
-            "id": "aitutor-question",
-            "name": "题库问答",
-            "description": "从题库获取题目，支持按知识点和难度筛选，包含出题和评估功能",
-            "category": "learning",
-            "version": "1.0",
-            "builtin": False,
-        },
-        {
-            "id": "aitutor-study-goal",
-            "name": "学习目标",
-            "description": "管理学习目标，支持创建、查询和更新学习目标",
-            "category": "learning",
-            "version": "1.0",
-            "builtin": False,
-        },
-        # 学科专项Skill
-        {
-            "id": "aitutor-math",
-            "name": "数学专项",
-            "description": "专注于数学学习辅助，包含公式推导、几何证明、数理逻辑训练",
-            "category": "subject",
-            "version": "1.0",
-            "builtin": False,
-        },
-        {
-            "id": "aitutor-english",
-            "name": "英语专项",
-            "description": "专注于英语学习辅助，包含词汇记忆、语法讲解、阅读理解",
-            "category": "subject",
-            "version": "1.0",
-            "builtin": False,
-        },
-        {
-            "id": "aitutor-physics",
-            "name": "物理专项",
-            "description": "专注于物理学习辅助，包含力学、电磁学、光学等专题讲解",
-            "category": "subject",
-            "version": "1.0",
-            "builtin": False,
+            "builtin": True,
         },
     ]
 
@@ -316,92 +267,8 @@ class SkillService:
         skill_id = preset["id"]
         skill_name = preset["name"]
 
-        # 根据不同skill类型生成不同的内容模板
-        templates = {
-            "aitutor-math": """---
-description: AI Tutor 数学专项学习技能 - 提供数学公式推导、几何证明、数理逻辑训练等专业辅助
----
-
-# AI Tutor 数学专项学习技能
-
-用于提供专业的数学学习辅助，涵盖公式推导、几何证明、数理逻辑训练等专题。
-
-## 技能用途
-
-当需要：
-- 推导数学公式或证明定理
-- 解决几何证明题
-- 训练数理逻辑思维
-- 讲解数学概念和解题技巧
-
-## 使用建议
-
-此技能可与 core 技能配合使用，提供更专业的数学辅助学习体验。
-
----
-
-## 版权声明
-
-此技能由 AI Tutor 系统自动生成。
-""",
-            "aitutor-english": """---
-description: AI Tutor 英语专项学习技能 - 提供词汇记忆、语法讲解、阅读理解等专业辅助
----
-
-# AI Tutor 英语专项学习技能
-
-用于提供专业的英语学习辅助，涵盖词汇记忆、语法讲解、阅读理解等专题。
-
-## 技能用途
-
-当需要：
-- 学习英语词汇和短语
-- 理解英语语法规则
-- 练习阅读理解
-- 提升写作表达能力
-
-## 使用建议
-
-此技能可与 core 技能配合使用，提供更专业的英语辅助学习体验。
-
----
-
-## 版权声明
-
-此技能由 AI Tutor 系统自动生成。
-""",
-            "aitutor-physics": """---
-description: AI Tutor 物理专项学习技能 - 提供力学、电磁学、光学等专题讲解
----
-
-# AI Tutor 物理专项学习技能
-
-用于提供专业的物理学习辅助，涵盖力学、电磁学、光学等专题。
-
-## 技能用途
-
-当需要：
-- 理解物理概念和定律
-- 解决物理计算题
-- 分析物理实验
-- 掌握物理公式应用
-
-## 使用建议
-
-此技能可与 core 技能配合使用，提供更专业的物理辅助学习体验。
-
----
-
-## 版权声明
-
-此技能由 AI Tutor 系统自动生成。
-""",
-        }
-
         # 获取模板或使用默认模板
-        template = templates.get(
-            skill_id,
-            f"""---
+        return f"""---
 description: {preset['description']}
 ---
 
@@ -418,10 +285,7 @@ description: {preset['description']}
 ## 版权声明
 
 此技能由 AI Tutor 系统自动生成。
-""",
-        )
-
-        return template
+"""
 
     @classmethod
     def uninstall_skill(cls, skill_name: str) -> Dict[str, Any]:
